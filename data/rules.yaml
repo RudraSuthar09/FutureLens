@@ -1,0 +1,13 @@
+rules:
+  - anomaly_type: "drop"
+    top_feature: "ad_spend"
+    action: "Increase advertising sub-budget for underperforming regions."
+    impact: "Estimated recovery of 30-40% of baseline sales within 2 weeks."
+  - anomaly_type: "spike"
+    top_feature: "ad_spend"
+    action: "Maintain current ad spend and evaluate organic growth sources."
+    impact: "Sustainable long-term growth with efficient CAC."
+  - anomaly_type: "drop"
+    top_feature: "price"
+    action: "Evaluate competitor pricing and consider promotional discounts."
+    impact: "Immediate short-term recovery, watch profit margins."

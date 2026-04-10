@@ -1,0 +1,15 @@
+streamlit
+fastapi
+uvicorn
+python-multipart
+prophet
+lightgbm
+MAPIE
+scikit-learn
+shap
+pandas
+numpy
+plotly
+google-generativeai
+python-dotenv
+requests
