@@ -224,9 +224,7 @@ if st.session_state.data:
         else:
             color = "red"
         st.progress(min(int(truth_score), 100))
-        st.markdown(
-            f"**:{'green' if color == 'green' else ('orange' if color == 'orange' else 'red')}[Model is {truth_score:.1f}% better than baseline]**"
-        )
+        st.markdown(f"**:{color}[Model is {truth_score:.1f}% better than baseline]**")
 
     # === TAB 2: Root Cause ===
     with tab2:

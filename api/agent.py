@@ -80,7 +80,8 @@ def chat(message: str, session_context: List[Dict[str, str]] = None, system_inst
         chat_session = model.start_chat(history=history, enable_automatic_function_calling=True)
         response = chat_session.send_message(message)
         return response.text
-        
+
     except Exception as e:
-        print(f"Gemini API Error: {e}")
-        return f"Fallback Response: The model could not be reached, but data implies an anomaly tied to top features. Error: {str(e)}"
+        import logging as _logging
+        _logging.getLogger(__name__).error(f"Gemini API Error: {e}")
+        return "I was unable to reach the AI model at this moment. Please try again in a few seconds."

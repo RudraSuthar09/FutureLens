@@ -176,7 +176,12 @@ def run_forecast(df: pd.DataFrame) -> Dict[str, Any]:
 
         lag_vals: Dict[str, List[float]] = {}
         for lag in available_lags:
-            lag_vals[f"lag{lag}"] = [residual_history[-lag] if len(residual_history) >= lag else 0.0]
+            if len(residual_history) >= lag:
+                lag_vals[f"lag{lag}"] = [residual_history[-lag]]
+            else:
+                # Not enough history yet: use mean of what we have
+                fallback = float(np.mean(residual_history)) if residual_history else 0.0
+                lag_vals[f"lag{lag}"] = [fallback]
         window_slice = residual_history[-rolling_window:] if len(residual_history) >= rolling_window else residual_history
         lag_vals[f"rolling_mean_{rolling_window}"] = [float(np.mean(window_slice))]
 
