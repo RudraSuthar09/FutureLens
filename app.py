@@ -4,11 +4,201 @@ import pandas as pd
 import plotly.graph_objects as go
 
 # --- Configuration ---
-st.set_page_config(page_title="FutureLens", layout="wide")
+st.set_page_config(page_title="FutureLens AI - Powered by NatWest", layout="wide", page_icon="🟣")
 API_URL = "http://localhost:8000"
 
-st.title("FutureLens")
-st.markdown("*FutureLens doesn't just predict the future — it tells you how to change it.*")
+st.markdown("""
+<style>
+    /* ------------------------------------- */
+    /* ENHANCED NATWEST THEME                */
+    /* ------------------------------------- */
+    
+    /* SIDEBAR */
+    [data-testid="stSidebar"] {
+        background-color: #5A287D !important;
+        border-right: none;
+    }
+    [data-testid="stSidebar"] p:not(.stButton p), 
+    [data-testid="stSidebar"] span:not(.stButton span), 
+    [data-testid="stSidebar"] label, 
+    [data-testid="stSidebar"] h1, 
+    [data-testid="stSidebar"] h2 {
+        color: #FFFFFF !important;
+    }
+    
+    /* SIDEBAR BUTTONS FIX (Demo Button Text Visibility) */
+    [data-testid="stSidebar"] .stButton>button {
+        background-color: #FFFFFF !important;
+        border: 2px solid #FFFFFF !important;
+        border-radius: 10px;
+        transition: all 0.3s ease;
+        padding: 5px 15px;
+    }
+    [data-testid="stSidebar"] .stButton>button p,
+    [data-testid="stSidebar"] .stButton>button div {
+        color: #5A287D !important;
+        font-weight: bold !important;
+    }
+    [data-testid="stSidebar"] .stButton>button:hover {
+        background-color: #F8F4FA !important;
+        border: 2px solid #00A859 !important; /* Green Accent on hover */
+    }
+    [data-testid="stSidebar"] .stButton>button:hover p,
+    [data-testid="stSidebar"] .stButton>button:hover div {
+        color: #00A859 !important; /* Green Accent text */
+    }
+    
+    /* FILE UPLOADER */
+    [data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] {
+        background-color: rgba(255, 255, 255, 0.1) !important;
+        border: 1px dashed rgba(255, 255, 255, 0.5) !important;
+        border-radius: 10px;
+    }
+    [data-testid="stSidebar"] [data-testid="stFileUploader"] button {
+        background-color: #FFFFFF !important;
+        border: 2px solid #FFFFFF !important;
+        border-radius: 8px;
+        font-weight: 600;
+        padding: 4px 15px !important;
+        transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1) !important;
+    }
+    [data-testid="stSidebar"] [data-testid="stFileUploader"] button p,
+    [data-testid="stSidebar"] [data-testid="stFileUploader"] button span,
+    [data-testid="stSidebar"] [data-testid="stFileUploader"] button div {
+        color: #5A287D !important;
+        transition: all 0.3s ease !important;
+    }
+    [data-testid="stSidebar"] [data-testid="stFileUploader"] button:hover {
+        background-color: #5A287D !important;
+        border: 2px solid #FFFFFF !important;
+        transform: scale(1.06) !important;
+        box-shadow: 0px 4px 10px rgba(0,0,0,0.2) !important;
+    }
+    [data-testid="stSidebar"] [data-testid="stFileUploader"] button:hover p,
+    [data-testid="stSidebar"] [data-testid="stFileUploader"] button:hover span,
+    [data-testid="stSidebar"] [data-testid="stFileUploader"] button:hover div {
+        color: #FFFFFF !important;
+    }
+    
+    /* MAIN AREA BUTTONS */
+    .stMain .stButton>button {
+        color: #FFFFFF !important;
+        background-color: #5A287D !important;
+        border: none !important;
+        font-weight: 600;
+        border-radius: 8px;
+        transition: all 0.3s ease;
+        box-shadow: 0 4px 6px rgba(90, 40, 125, 0.2);
+    }
+    .stMain .stButton>button:hover {
+        background-color: #A20067 !important;
+        box-shadow: 0 6px 12px rgba(162, 0, 103, 0.3);
+    }
+    .stMain h1, .stMain h2, .stMain h3 {
+        color: #5A287D !important;
+    }
+    
+    /* HEADER (Larger, more premium) */
+    .header-container {
+        display: flex;
+        align-items: center;
+        padding-bottom: 20px;
+        border-bottom: 3px solid #5A287D;
+        margin-bottom: 20px;
+    }
+    .header-title {
+        color: #5A287D !important;
+        font-size: 4.2rem !important;
+        font-weight: 900 !important;
+        letter-spacing: -2px !important;
+        margin-left: 15px !important;
+        margin-bottom: 0px !important;
+        padding-bottom: 0px !important;
+        line-height: 1.1 !important;
+    }
+    .sub-header {
+        color: #555 !important;
+        font-size: 1.3rem !important;
+        margin-bottom: 35px !important;
+        font-weight: 500 !important;
+    }
+    
+    /* CUSTOM SPINNER / LOADER STYLING */
+    .stSpinner > div > div {
+        border-top-color: #A20067 !important;
+        border-right-color: #5A287D !important;
+        border-bottom-color: #A20067 !important;
+        border-left-color: transparent !important;
+    }
+    .stSpinner p {
+        color: #5A287D !important;
+        font-weight: bold !important;
+        font-size: 1.1rem !important;
+    }
+
+    /* TABS (Navbar / Tabs Interface) */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 15px;
+        padding: 10px 0;
+    }
+    .stTabs [data-baseweb="tab"] {
+        background-color: #F8F4FA;
+        border-radius: 30px;
+        padding: 5px 25px;
+        border: 1px solid #EBE2F0;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        transition: all 0.3s ease;
+    }
+    .stTabs [data-baseweb="tab"] p {
+        color: #5A287D !important;
+        font-weight: 600;
+    }
+    .stTabs [data-baseweb="tab"]:hover {
+        border: 1px solid #A20067;
+        background-color: #FFFFFF;
+    }
+    .stTabs [aria-selected="true"] {
+        background-color: #5A287D !important;
+        border: none !important;
+        box-shadow: 0 4px 8px rgba(90, 40, 125, 0.3) !important;
+    }
+    .stTabs [aria-selected="true"] p {
+        color: #FFFFFF !important;
+        font-weight: bold !important;
+    }
+    
+    /* CHAT INTERFACE (Purple and White) */
+    [data-testid="stChatMessage"] {
+        background-color: #F8F4FA;
+        border-radius: 15px;
+        padding: 15px 20px;
+        border-left: 6px solid #5A287D;
+        box-shadow: 0px 4px 10px rgba(0, 0, 0, 0.05);
+        margin-bottom: 15px;
+    }
+    /* Style Chat Avatars */
+    [data-testid="stChatMessageAvatarUser"] { background-color: #00A859 !important; color: white !important; } /* Using nice green accent here */
+    [data-testid="stChatMessageAvatarAssistant"] { background-color: #5A287D !important; color: white !important;}
+    
+    /* Chat Input */
+    [data-testid="stChatInput"] {
+        border: 2px solid #5A287D !important;
+        border-radius: 15px !important;
+    }
+    img[src*="natwest_logo.jpg"] {
+        width: 290px !important;  /* change this value to resize the logo */
+        height: auto !important;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+col1, col2 = st.columns([2, 12], vertical_alignment="center")
+with col1:
+    st.image("assets/natwest_logo.jpg", width=160)
+with col2:
+    st.markdown('<div class="header-title">FutureLens AI</div>', unsafe_allow_html=True)
+
+st.markdown('<div class="sub-header">Powered by NatWest — FutureLens doesn\'t just predict the future, it tells you how to change it.</div>', unsafe_allow_html=True)
 
 # --- Session State ---
 if "data" not in st.session_state:
@@ -51,7 +241,7 @@ with st.sidebar:
             load_data(uploaded_file.getvalue(), uploaded_file.name)
 
     st.markdown("---")
-    if st.button("🕹️ Demo Mode", use_container_width=True):
+    if st.button("🕹️ Demo Mode", width='stretch'):
         st.session_state.demo_mode = True
         import os, sys
         sample_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "sample_data.csv")
@@ -149,8 +339,9 @@ if st.session_state.data:
                     x=future_dates,
                     y=upper,
                     mode="lines",
+                    marker=dict(color="#A20067"),
                     line=dict(width=0),
-                    fillcolor="rgba(255,165,0,0.2)",
+                    fillcolor="rgba(162,0,103,0.15)",
                     fill="tonexty",
                     showlegend=True,
                 )
@@ -170,26 +361,32 @@ if st.session_state.data:
 
         # Anomaly markers
         if anomalies:
-            anom_dates = [a["date"] for a in anomalies]
-            anom_values = [a["actual"] for a in anomalies]
-            fig.add_trace(
-                go.Scatter(
-                    x=anom_dates,
-                    y=anom_values,
-                    mode="markers",
-                    marker=dict(color="red", size=10, symbol="x"),
-                    name="Anomalies",
-                )
-            )
+            anom_dates = [a['date'] for a in anomalies]
+            anom_values = [a['actual'] for a in anomalies]
+            fig.add_trace(go.Scatter(
+                x=anom_dates, y=anom_values, mode='markers',
+                marker=dict(color='#C8102E', size=12, symbol='x', line=dict(width=2, color='white')),
+                name='Anomalies'
+            ))
 
         # Vertical dashed line at forecast start
         if historical_dates:
+            last_hist = historical_dates[-1]
+
             fig.add_vline(
-                x=historical_dates[-1],
+                x=last_hist,
                 line_dash="dash",
                 line_color="gray",
-                annotation_text="Forecast starts here",
-                annotation_position="top right",
+            )
+            fig.add_annotation(
+                x=last_hist,
+                y=1.0,
+                yref="paper",
+                text="Forecast starts here",
+                xanchor="right",
+                showarrow=False,
+                font=dict(color="gray", size=11),
+                yshift=10
             )
 
         fig.update_layout(
@@ -233,11 +430,14 @@ if st.session_state.data:
         if shap_res:
             features = [s["feature"] for s in shap_res]
             importances = [s["importance"] for s in shap_res]
-
-            fig_shap = go.Figure(
-                go.Bar(x=importances, y=features, orientation="h", marker_color="indigo")
-            )
-            fig_shap.update_layout(yaxis={"categoryorder": "total ascending"})
+            
+            fig_shap = go.Figure(go.Bar(
+                x=importances,
+                y=features,
+                orientation='h',
+                marker_color='#5A287D'
+            ))
+            fig_shap.update_layout(yaxis={'categoryorder':'total ascending'})
             st.plotly_chart(fig_shap, use_container_width=True)
 
             st.info(data.get("rca_explanation", "No explanation provided."))
@@ -303,7 +503,7 @@ if st.session_state.data:
                 go.Scatter(
                     x=sc_dates,
                     y=baseline_vals,
-                    line=dict(color="royalblue", dash="dash"),
+                    line=dict(color="#5A287D", dash="dash"),
                     name="Baseline",
                 )
             )
@@ -311,7 +511,7 @@ if st.session_state.data:
                 go.Scatter(
                     x=sc_dates,
                     y=scenario_vals,
-                    line=dict(color="orange", width=2),
+                    line=dict(color="#A20067", width=3),
                     name=label,
                 )
             )
