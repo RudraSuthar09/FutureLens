@@ -70,6 +70,14 @@ with st.sidebar:
 if st.session_state.data:
     data = st.session_state.data
     
+    # Extract Quality Guardian specifics
+    det_freq = data.get("detected_frequency", "Unknown")
+    null_counts_dict = data.get("null_count", {})
+    total_nulls = sum(null_counts_dict.values()) if null_counts_dict else 0
+    row_count = len(data.get("historical", []))
+    
+    st.info(f"**Quality Guardian:** Detected frequency: `{det_freq}` | Null count fixed: `{total_nulls}` | Row count: `{row_count}`")
+    
     tab1, tab2, tab3, tab4 = st.tabs(["Forecast", "Root Cause", "Scenario", "Chat"])
     
     # === TAB 1: Forecast ===
@@ -82,7 +90,8 @@ if st.session_state.data:
         lower = data.get("lower", [])
         upper = data.get("upper", [])
         anomalies = data.get("anomalies", [])
-        truth_score = data.get("truth_score", 0.0)
+        truth_meter = data.get("truth_meter", {})
+        truth_score = truth_meter.get("score", 0.0)
 
         fig = go.Figure()
 
@@ -132,11 +141,13 @@ if st.session_state.data:
         # Normalize cap to 100 for st.progress
         st.progress(min(max(int(truth_score), 0), 100))
         
-        msg = f"**Model is {truth_score:.1f}% better than baseline**"
-        if truth_score > 10:
-            st.success(msg)
+        msg = truth_meter.get("message", f"**Model is {truth_score:.1f}% better than baseline**")
+        reliable = truth_meter.get("reliable", truth_score > 10)
+        
+        if reliable:
+            st.success(f"**{msg}**")
         else:
-            st.error(msg)
+            st.error(f"**{msg}**")
 
     # === TAB 2: Root Cause ===
     with tab2:

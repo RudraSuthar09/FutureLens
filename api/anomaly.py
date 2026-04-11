@@ -73,24 +73,27 @@ def compute_truth_meter(model_mape: float, baseline_mape: float) -> Dict[str, An
     # OR model_mape <= 0.9 * baseline_mape. Let's assume standard relative ratio.
     try:
         if baseline_mape == 0:
-            return {"reliable": False, "color": "red", "message": "Baseline MAPE is 0 - invalid test"}
+            return {"reliable": False, "color": "red", "message": "Baseline MAPE is 0 - invalid test", "score": 0.0}
             
         improvement = (baseline_mape - model_mape) / baseline_mape
+        score = max(0.0, improvement * 100)
         
         if improvement > 0.10:
             return {
                 "reliable": True,
                 "color": "green",
-                "message": f"High confidence — MAPE {model_mape:.1f}%"
+                "message": f"High confidence — MAPE {model_mape:.1f}%",
+                "score": score
             }
         else:
             diff = max(0.0, improvement * 100)
             return {
                 "reliable": False,
                 "color": "red",
-                "message": f"Model only {diff:.1f}% better — low trust"
+                "message": f"Model only {diff:.1f}% better — low trust",
+                "score": score
             }
     except Exception as e:
         import logging
         logging.error(f"Error in truth meter: {e}")
-        return {"reliable": False, "color": "red", "message": "Error calculating truth meter."}
+        return {"reliable": False, "color": "red", "message": "Error calculating truth meter.", "score": 0.0}

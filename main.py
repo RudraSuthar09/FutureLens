@@ -20,7 +20,7 @@ from api.database import (
 )
 from api.forecaster import run_forecast
 from api.rca import compute_shap, explain_rca
-from api.anomaly import detect_anomalies
+from api.anomaly import detect_anomalies, compute_truth_meter
 from api.agent import chat
 from api.simulator import simulate_scenario
 
@@ -85,13 +85,28 @@ async def upload_file(file: UploadFile = File(...)):
         contents = await file.read()
         df = pd.read_csv(io.BytesIO(contents))
         
+        # 4. Null summary: count nulls per column before any fill
+        null_counts = df.isnull().sum().astype(int).to_dict()
+        
         # CRITICAL FIX 2 Exact steps
         df['Date'] = pd.to_datetime(df['Date'])
         df = df.sort_values('Date').reset_index(drop=True)
         df = df.groupby('Date')['AveragePrice'].mean().reset_index()
         
+        # 3. Frequency consistency
+        detected_freq = pd.infer_freq(df['Date'])
+        detected_freq = detected_freq if detected_freq else "Unknown"
+        
         # Map back to standardized internal schema
         df.rename(columns={'Date': 'date', 'AveragePrice': 'sales'}, inplace=True)
+        
+        # 1. Minimum rows check
+        if len(df) < 20:
+            raise HTTPException(status_code=400, detail="Dataset too small — need at least 20 rows")
+            
+        # 2. Non-negative values check
+        if (df['sales'] < 0).any():
+            raise HTTPException(status_code=400, detail="Sales column contains negative values")
 
         session_id = str(uuid.uuid4())
         row_count = len(df)
@@ -104,14 +119,20 @@ async def upload_file(file: UploadFile = File(...)):
         
         # Extract model & X for RCA and truth score for saving
         model = forecast_results.pop("model", None)
-        X = forecast_results.pop("X", None)
-        truth_score = forecast_results.get("truth_score", 0.0)
+        X_train = forecast_results.pop("X_train", None)
+        X_test = forecast_results.pop("X_test", None)
+        
+        model_mape = forecast_results.pop("model_mape", 0.0)
+        baseline_mape = forecast_results.pop("baseline_mape", 0.0)
+        
+        truth_meter = compute_truth_meter(model_mape, baseline_mape)
+        truth_score = truth_meter.get("score", 0.0)
         
         # Call compute_shap()
         shap_results = []
         rca_explanation = "No explanation provided"
-        if model is not None and X is not None:
-            shap_results = compute_shap(model, X, X)
+        if model is not None and X_train is not None and X_test is not None:
+            shap_results = compute_shap(model, X_train, X_test)
             rca_explanation = explain_rca(shap_results)
             
         # Call detect_anomalies()
@@ -122,6 +143,9 @@ async def upload_file(file: UploadFile = File(...)):
         forecast_results["anomalies"] = anomalies
         forecast_results["shap_results"] = shap_results
         forecast_results["rca_explanation"] = rca_explanation
+        forecast_results["truth_meter"] = truth_meter
+        forecast_results["detected_frequency"] = detected_freq
+        forecast_results["null_count"] = null_counts
         
         # Sanitize numpy arrays/floats before database saving and FastAPI response
         sanitized_results = _sanitize_for_json(forecast_results)

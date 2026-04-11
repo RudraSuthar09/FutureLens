@@ -17,7 +17,7 @@ def compute_shap(model: Any, X_train: pd.DataFrame, X_test: pd.DataFrame) -> Lis
         List of dictionaries with feature, importance, and direction.
     """
     try:
-        explainer = shap.TreeExplainer(model)
+        explainer = shap.TreeExplainer(model, X_train)
         shap_values = explainer.shap_values(X_test)
         
         # Calculate mean absolute SHAP values per feature
