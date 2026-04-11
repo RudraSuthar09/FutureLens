@@ -129,14 +129,14 @@ if st.session_state.data:
         # Truth Meter
         st.subheader("Truth Meter")
         
-        # Color coding: > 20% better is green, otherwise red/orange
-        color = "red"
-        if truth_score > 10: color = "green"
-        elif truth_score > 0: color = "orange"
-        
         # Normalize cap to 100 for st.progress
-        st.progress(min(int(truth_score), 100))
-        st.markdown(f"**Model is {truth_score:.1f}% better than baseline**")
+        st.progress(min(max(int(truth_score), 0), 100))
+        
+        msg = f"**Model is {truth_score:.1f}% better than baseline**"
+        if truth_score > 10:
+            st.success(msg)
+        else:
+            st.error(msg)
 
     # === TAB 2: Root Cause ===
     with tab2:
@@ -167,12 +167,27 @@ if st.session_state.data:
         
         if st.button("Run Scenario"):
             st.write("Comparing Baseline Forecast against Scenario Adjustment...")
-            scenario_forecast = [val * (1 + (change_pct / 100.0)) for val in forecast]
             
-            fig_scenario = go.Figure()
-            fig_scenario.add_trace(go.Scatter(x=future_dates, y=forecast, line=dict(dash='dash', color='orange'), name='Baseline'))
-            fig_scenario.add_trace(go.Scatter(x=future_dates, y=scenario_forecast, line=dict(color='green'), name=f'Scenario ({change_pct}%)'))
-            st.plotly_chart(fig_scenario, use_container_width=True)
+            payload = {
+                "session_id": st.session_state.data["session_id"],
+                "change_percent": change_pct
+            }
+            try:
+                resp = requests.post(f"{API_URL}/simulate", json=payload)
+                if resp.status_code == 200:
+                    sim_data = resp.json()
+                    
+                    fig_scenario = go.Figure()
+                    fig_scenario.add_trace(go.Scatter(x=sim_data["dates"], y=sim_data["baseline"], line=dict(color='blue'), name='Baseline'))
+                    fig_scenario.add_trace(go.Scatter(x=sim_data["dates"], y=sim_data["scenario"], line=dict(color='orange'), name='Scenario'))
+                    st.plotly_chart(fig_scenario, use_container_width=True)
+                    
+                    if "summary" in sim_data:
+                        st.info(sim_data["summary"])
+                else:
+                    st.error(f"Error {resp.status_code}: {resp.text}")
+            except Exception as e:
+                st.error(f"Request failed: {e}")
 
     # === TAB 4: Chat ===
     with tab4:

@@ -24,7 +24,7 @@ def recommend_action(anomaly_type: str, top_feature: str) -> str:
             rules = yaml.safe_load(file).get('rules', [])
         
         for rule in rules:
-            if rule['anomaly_type'] == anomaly_type and rule['top_feature'] == top_feature:
+            if rule['condition']['anomaly_type'] == anomaly_type and rule['condition']['feature'] == top_feature:
                 return f"Action: {rule['action']} Impact: {rule['impact']}"
                 
         return "No specific rule found. Consider general review of the specified feature."
