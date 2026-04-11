@@ -117,10 +117,10 @@ if st.session_state.data:
         # Anomalies
         if anomalies:
             anom_dates = [a['date'] for a in anomalies]
-            anom_values = [a['value'] for a in anomalies]
+            anom_values = [a['actual'] for a in anomalies]
             fig.add_trace(go.Scatter(
                 x=anom_dates, y=anom_values, mode='markers',
-                marker=dict(color='red', size=10, symbol='pin'),
+                marker=dict(color='red', size=10, symbol='x'),
                 name='Anomalies'
             ))
 

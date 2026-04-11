@@ -141,7 +141,7 @@ async def upload_file(file: UploadFile = File(...)):
         sanitized_results = _sanitize_for_json(forecast_results)
         
         save_forecast(session_id, sanitized_results, truth_score)
-        save_anomalies(session_id, anomalies)
+        save_anomalies(session_id, sanitized_results["anomalies"])
         
         return sanitized_results
         
