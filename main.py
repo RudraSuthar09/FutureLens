@@ -164,7 +164,7 @@ async def upload_file(file: UploadFile = File(...)):
         
     except Exception as e:
         logger.error(f"Error processing upload: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error. Check server logs for details.")
 
 @app.get("/forecast/{session_id}")
 async def get_forecast_data(session_id: str):
@@ -176,7 +176,7 @@ async def get_forecast_data(session_id: str):
         return data
     except Exception as e:
         logger.error(f"Error fetching forecast: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error. Check server logs for details.")
 
 @app.get("/anomalies/{session_id}")
 async def get_anomalies_data(session_id: str):
@@ -188,7 +188,7 @@ async def get_anomalies_data(session_id: str):
         return data
     except Exception as e:
         logger.error(f"Error fetching anomalies: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error. Check server logs for details.")
 
 @app.post("/chat")
 async def chat_interaction(req: ChatRequest):
@@ -213,14 +213,26 @@ async def chat_interaction(req: ChatRequest):
         truth_score = forecast_data.get("truth_score", 0.0)
         rca = forecast_data.get("rca_explanation", "Not available.")
 
+        # Summarise anomalies as human-readable text for the LLM
+        if anomalies_data:
+            anom_lines = []
+            for a in anomalies_data[:10]:
+                anom_lines.append(
+                    f"{a.get('date','?')}: actual={a.get('actual','?'):.2f}, "
+                    f"expected={a.get('expected','?'):.2f}, severity={a.get('severity','?')}"
+                )
+            anomaly_summary = f"{len(anomalies_data)} anomaly/anomalies detected:\n" + "\n".join(anom_lines)
+        else:
+            anomaly_summary = "No anomalies detected."
+
         data_summary = (
             f"Dataset covers {len(historical)} historical data points "
             f"from {hist_dates[0] if hist_dates else 'unknown'} to {hist_dates[-1] if hist_dates else 'unknown'}. "
             f"Forecasting {len(future_dates)} periods ahead "
             f"({future_dates[0] if future_dates else '?'} to {future_dates[-1] if future_dates else '?'}). "
             f"Model Truth Score: {truth_score:.1f}% better than naive baseline. "
-            f"Root Cause Analysis: {rca} "
-            f"Detected Anomalies ({len(anomalies_data)} total): {json.dumps(anomalies_data[:10])}."
+            f"Root Cause Analysis: {rca}. "
+            f"{anomaly_summary}"
         )
 
         system_msg = (
@@ -236,7 +248,7 @@ async def chat_interaction(req: ChatRequest):
         return {"response": response}
     except Exception as e:
         logger.error(f"Error in chat endpoint: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error. Check server logs for details.")
 
 @app.post("/simulate")
 async def simulate(req: SimulateRequest):
@@ -269,7 +281,7 @@ async def simulate(req: SimulateRequest):
         return _sanitize_for_json(res)
     except Exception as e:
         logger.error(f"Error in simulate endpoint: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error. Check server logs for details.")
 
 @app.get("/history")
 async def get_history():
@@ -277,7 +289,7 @@ async def get_history():
     try:
         return get_recent_uploads(10)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error. Check server logs for details.")
 
 @app.get("/health")
 async def health_check():

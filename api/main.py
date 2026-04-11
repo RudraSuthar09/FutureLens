@@ -118,7 +118,7 @@ async def upload_file(file: UploadFile = File(...)):
         
     except Exception as e:
         logger.error(f"Error processing upload: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error. Check server logs for details.")
 
 @app.get("/forecast/{session_id}")
 async def get_forecast_data(session_id: str):
@@ -130,7 +130,7 @@ async def get_forecast_data(session_id: str):
         return data
     except Exception as e:
         logger.error(f"Error fetching forecast: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error. Check server logs for details.")
 
 @app.get("/anomalies/{session_id}")
 async def get_anomalies_data(session_id: str):
@@ -142,7 +142,7 @@ async def get_anomalies_data(session_id: str):
         return data
     except Exception as e:
         logger.error(f"Error fetching anomalies: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error. Check server logs for details.")
 
 @app.post("/chat")
 async def chat_interaction(req: ChatRequest):
@@ -167,7 +167,7 @@ async def chat_interaction(req: ChatRequest):
         return {"response": response}
     except Exception as e:
         logger.error(f"Error in chat endpoint: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error. Check server logs for details.")
 
 @app.post("/simulate")
 async def simulate(req: SimulateRequest):
@@ -202,7 +202,7 @@ async def simulate(req: SimulateRequest):
         }
     except Exception as e:
         logger.error(f"Error in simulate endpoint: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error. Check server logs for details.")
 
 @app.get("/history")
 async def get_history():
@@ -212,7 +212,7 @@ async def get_history():
         return uploads
     except Exception as e:
         logger.error(f"Error fetching history: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error. Check server logs for details.")
 
 @app.get("/health")
 async def health_check():

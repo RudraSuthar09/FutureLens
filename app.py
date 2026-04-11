@@ -140,15 +140,18 @@ if st.session_state.data:
         
         # Truth Meter
         st.subheader("Truth Meter")
-        
-        # Color coding: > 20% better is green, otherwise red/orange
-        color = "red"
-        if truth_score > 10: color = "green"
-        elif truth_score > 0: color = "orange"
-        
+
+        # Color-code the label: green > 10%, orange > 0%, red otherwise
+        if truth_score > 10:
+            color = "green"
+        elif truth_score > 0:
+            color = "orange"
+        else:
+            color = "red"
+
         # Normalize cap to 100 for st.progress
         st.progress(min(int(truth_score), 100))
-        st.markdown(f"**Model is {truth_score:.1f}% better than baseline**")
+        st.markdown(f"**:{'green' if color == 'green' else ('orange' if color == 'orange' else 'red')}[Model is {truth_score:.1f}% better than baseline]**")
 
     # === TAB 2: Root Cause ===
     with tab2:
