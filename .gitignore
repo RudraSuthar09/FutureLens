@@ -1,1 +1,28 @@
+# Environments
 .env
+.venv/
+venv/
+env/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Streamlit
+.streamlit/secrets.toml
+
+# OS Files
+.DS_Store
+
+# IDEs
+.vscode/
+.idea/
+
+# Testing/Coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Notebooks
+.ipynb_checkpoints/
