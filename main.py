@@ -84,14 +84,45 @@ async def upload_file(file: UploadFile = File(...)):
     try:
         contents = await file.read()
         df = pd.read_csv(io.BytesIO(contents))
-        
-        # CRITICAL FIX 2 Exact steps
-        df['Date'] = pd.to_datetime(df['Date'])
-        df = df.sort_values('Date').reset_index(drop=True)
-        df = df.groupby('Date')['AveragePrice'].mean().reset_index()
-        
-        # Map back to standardized internal schema
-        df.rename(columns={'Date': 'date', 'AveragePrice': 'sales'}, inplace=True)
+
+        # --- Smart column detection ---
+        # 1. Find date column (case-insensitive, tries to parse as datetime)
+        date_col = None
+        for col in df.columns:
+            try:
+                parsed = pd.to_datetime(df[col], errors='coerce')
+                if parsed.notna().sum() >= 0.8 * len(df):
+                    date_col = col
+                    df[col] = parsed
+                    break
+            except Exception:
+                continue
+        if date_col is None:
+            raise HTTPException(status_code=400, detail="No date column found in CSV.")
+
+        # 2. Find numeric target column
+        # Prefer known names; fall back to first remaining numeric column
+        preferred_names = ['AveragePrice', 'sales', 'price', 'value', 'revenue', 'amount']
+        num_cols = df.select_dtypes(include=['number']).columns.tolist()
+        target_col = None
+        for name in preferred_names:
+            if name in df.columns:
+                target_col = name
+                break
+        if target_col is None:
+            if num_cols:
+                target_col = num_cols[0]
+            else:
+                raise HTTPException(status_code=400, detail="No numeric target column found in CSV.")
+
+        # 3. Keep only date + target, group by date (handles multi-row-per-date CSVs)
+        df = df[[date_col, target_col]].copy()
+        df.rename(columns={date_col: 'date', target_col: 'sales'}, inplace=True)
+        df = df.groupby('date')['sales'].mean().reset_index()
+        df = df.sort_values('date').reset_index(drop=True)
+
+        # 4. Fill gaps
+        df['sales'] = df['sales'].ffill().bfill()
 
         session_id = str(uuid.uuid4())
         row_count = len(df)
@@ -173,8 +204,32 @@ async def chat_interaction(req: ChatRequest):
             
         forecast_data = get_forecast(req.session_id) or {}
         anomalies_data = get_anomalies(req.session_id) or []
-        
-        system_msg = f"You are an AI forecasting assistant analyzing the user's uploaded data. The data has a baseline model and a LightGBM model. RCA Explanation: {forecast_data.get('rca_explanation', 'None')}. Detected Anomalies: {json.dumps(anomalies_data)}."
+
+        # Build a rich system message so Gemini has full context about the loaded data
+        historical = forecast_data.get("historical", [])
+        hist_dates = forecast_data.get("historical_dates", [])
+        future_dates = forecast_data.get("dates", [])
+        forecast_vals = forecast_data.get("forecast", [])
+        truth_score = forecast_data.get("truth_score", 0.0)
+        rca = forecast_data.get("rca_explanation", "Not available.")
+
+        data_summary = (
+            f"Dataset covers {len(historical)} historical data points "
+            f"from {hist_dates[0] if hist_dates else 'unknown'} to {hist_dates[-1] if hist_dates else 'unknown'}. "
+            f"Forecasting {len(future_dates)} periods ahead "
+            f"({future_dates[0] if future_dates else '?'} to {future_dates[-1] if future_dates else '?'}). "
+            f"Model Truth Score: {truth_score:.1f}% better than naive baseline. "
+            f"Root Cause Analysis: {rca} "
+            f"Detected Anomalies ({len(anomalies_data)} total): {json.dumps(anomalies_data[:10])}."
+        )
+
+        system_msg = (
+            "You are FutureLens, an expert AI forecasting assistant. "
+            "You have already analyzed the user's uploaded dataset. "
+            "You MUST use the data provided below to answer questions — "
+            "do NOT ask the user to provide data you already have. "
+            f"{data_summary}"
+        )
         
         response = chat(req.message, context, system_instruction=system_msg)
         save_chat(req.session_id, req.message, response)

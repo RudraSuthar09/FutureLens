@@ -1,42 +1,30 @@
 rules:
-  - condition:
-      anomaly_type: drop
-      feature: ad_spend
+  - anomaly_type: drop
+    top_feature: ad_spend
     action: "Increase ad spend by 8% in affected region"
-    expected_impact: "+9% recovery in 5 days"
-    confidence: 0.82
+    impact: "+9% recovery in 5 days"
 
-  - condition:
-      anomaly_type: drop
-      feature: pricing
+  - anomaly_type: drop
+    top_feature: pricing
     action: "Review pricing strategy — consider 5% discount"
-    expected_impact: "+6% conversion in 2 weeks"
-    confidence: 0.74
+    impact: "+6% conversion in 2 weeks"
 
-  - condition:
-      anomaly_type: spike
-      feature: sales
+  - anomaly_type: spike
+    top_feature: sales
     action: "Increase inventory and scale performing channels"
-    expected_impact: "Sustain +15% run rate"
-    confidence: 0.88
+    impact: "Sustain +15% run rate"
 
-  - condition:
-      anomaly_type: drop
-      feature: traffic
+  - anomaly_type: drop
+    top_feature: traffic
     action: "Launch re-engagement email campaign and review SEO rankings"
-    expected_impact: "+5% visitors in 3 days"
-    confidence: 0.79
+    impact: "+5% visitors in 3 days"
 
-  - condition:
-      anomaly_type: seasonal
-      feature: pattern
+  - anomaly_type: seasonal
+    top_feature: pattern
     action: "Pre-allocate budget for expected dip and launch targeted promotions"
-    expected_impact: "Mitigate drop by 10%"
-    confidence: 0.91
+    impact: "Mitigate drop by 10%"
 
-  - condition:
-      anomaly_type: competitor
-      feature: event
+  - anomaly_type: competitor
+    top_feature: event
     action: "Deploy counter-promotion highlighting unique value proposition"
-    expected_impact: "Recover 5% market share"
-    confidence: 0.85
+    impact: "Recover 5% market share"

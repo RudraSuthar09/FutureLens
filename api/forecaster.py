@@ -54,12 +54,11 @@ def run_forecast(df: pd.DataFrame, periods: int = 8) -> Dict[str, Any]:
     X = train_data[['lag1', 'lag2', 'lag4', 'lag8', 'rolling_mean_4']]
     y = train_data['y']
     
-    # Fit LightGBM + MAPIE
+    # Fit LightGBM first (required for MAPIE cv="prefit")
     lgbm = LGBMRegressor(random_state=42)
-    mapie = MapieRegressor(estimator=lgbm, cv="prefit")
-    
-    # MAPIE requires cross_val to be valid if cv=prefit, we can fit LGBM first
     lgbm.fit(X, y)
+    # MAPIE wraps the already-fitted LGBM for conformal prediction intervals
+    mapie = MapieRegressor(estimator=lgbm, cv="prefit")
     mapie.fit(X, y)
     
     # Predict future dynamically (autoregressive step-by-step or just use last known values padded)
@@ -85,9 +84,15 @@ def run_forecast(df: pd.DataFrame, periods: int = 8) -> Dict[str, Any]:
         })
         
         pred, pred_int = mapie.predict(X_next, alpha=0.1)  # 90% confidence interval
-        future_val = pred[0]
-        future_lower_val = pred_int[0][0][0]
-        future_upper_val = pred_int[0][1][0]
+        future_val = float(pred[0])
+        # pred_int shape can be (n_samples, 2, n_alpha) or (n_samples, 2) depending on MAPIE version
+        pi = pred_int[0]  # shape (2, n_alpha) or (2,)
+        if pi.ndim == 2:
+            future_lower_val = float(pi[0][0])
+            future_upper_val = float(pi[1][0])
+        else:
+            future_lower_val = float(pi[0])
+            future_upper_val = float(pi[1])
         
         future_preds.append(future_val)
         future_lower.append(future_lower_val)
@@ -104,11 +109,19 @@ def run_forecast(df: pd.DataFrame, periods: int = 8) -> Dict[str, Any]:
     if len(train_data) > 8:
         val_y = train_data['y'].iloc[-8:].values
         val_X = train_data[['lag1', 'lag2', 'lag4', 'lag8', 'rolling_mean_4']].iloc[-8:]
-        model_val_preds = mapie.predict(val_X)
-        baseline_val_preds = [train_data['y'].iloc[-9]] * 8
-        
-        model_mape = np.mean(np.abs((val_y - model_val_preds) / val_y)) * 100
-        baseline_mape = np.mean(np.abs((val_y - baseline_val_preds) / val_y)) * 100
+        # MAPIE.predict without alpha returns just predictions; with alpha returns a tuple
+        raw_preds = mapie.predict(val_X)
+        model_val_preds = raw_preds[0] if isinstance(raw_preds, tuple) else raw_preds
+        baseline_val_preds = np.array([train_data['y'].iloc[-9]] * 8)
+
+        # Guard against divide-by-zero in MAPE
+        nonzero = val_y != 0
+        if nonzero.any():
+            model_mape = np.mean(np.abs((val_y[nonzero] - model_val_preds[nonzero]) / val_y[nonzero])) * 100
+            baseline_mape = np.mean(np.abs((val_y[nonzero] - baseline_val_preds[nonzero]) / val_y[nonzero])) * 100
+        else:
+            model_mape = 10
+            baseline_mape = 20
     else:
         model_mape = 10
         baseline_mape = 20
