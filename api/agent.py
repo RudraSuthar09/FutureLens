@@ -20,7 +20,7 @@ def recommend_action(anomaly_type: str, top_feature: str) -> str:
     Loads rules.yaml, matches rule, returns action + impact.
     """
     try:
-        with open('data/rules.yaml', 'r') as file:
+        with open('config/rules.yaml', 'r') as file:
             rules = yaml.safe_load(file).get('rules', [])
         
         for rule in rules:
