@@ -85,27 +85,13 @@ async def upload_file(file: UploadFile = File(...)):
         contents = await file.read()
         df = pd.read_csv(io.BytesIO(contents))
         
-        # Auto-detect date column
-        date_col = None
-        for col in df.columns:
-            parsed = pd.to_datetime(df[col], errors='coerce')
-            if parsed.notna().sum() > (0.5 * len(df)): 
-                date_col = col
-                df[col] = parsed
-                break
-                
-        if date_col and date_col.lower() != 'date':
-            df.rename(columns={date_col: 'date'}, inplace=True)
-            
-        # Clean nulls (forward fill)
-        df.ffill(inplace=True)
-        # fallback to backfill if first row was null
-        df.bfill(inplace=True)
+        # CRITICAL FIX 2 Exact steps
+        df['Date'] = pd.to_datetime(df['Date'])
+        df = df.sort_values('Date').reset_index(drop=True)
+        df = df.groupby('Date')['AveragePrice'].mean().reset_index()
         
-        if 'sales' not in df.columns:
-            num_cols = df.select_dtypes(include=['number']).columns
-            if len(num_cols) > 0:
-                df.rename(columns={num_cols[0]: 'sales'}, inplace=True)
+        # Map back to standardized internal schema
+        df.rename(columns={'Date': 'date', 'AveragePrice': 'sales'}, inplace=True)
 
         session_id = str(uuid.uuid4())
         row_count = len(df)
@@ -185,7 +171,12 @@ async def chat_interaction(req: ChatRequest):
                 context.append({"role": "user", "content": row['user_message']})
                 context.append({"role": "model", "content": row['agent_response']})
             
-        response = chat(req.message, context)
+        forecast_data = get_forecast(req.session_id) or {}
+        anomalies_data = get_anomalies(req.session_id) or []
+        
+        system_msg = f"You are an AI forecasting assistant analyzing the user's uploaded data. The data has a baseline model and a LightGBM model. RCA Explanation: {forecast_data.get('rca_explanation', 'None')}. Detected Anomalies: {json.dumps(anomalies_data)}."
+        
+        response = chat(req.message, context, system_instruction=system_msg)
         save_chat(req.session_id, req.message, response)
         return {"response": response}
     except Exception as e:

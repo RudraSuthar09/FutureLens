@@ -53,7 +53,7 @@ def generate_report(forecast_summary: str, anomalies: str, truth_score: float) -
 # Tools dictionary for easy reference if needed
 tools = [explain_anomaly, recommend_action, simulate_scenario, generate_report]
 
-def chat(message: str, session_context: List[Dict[str, str]] = None) -> str:
+def chat(message: str, session_context: List[Dict[str, str]] = None, system_instruction: str = None) -> str:
     """
     Sends message to Gemini with tool definitions and session context.
     Handles tool calls and returns final text response.
@@ -67,7 +67,7 @@ def chat(message: str, session_context: List[Dict[str, str]] = None) -> str:
 
     try:
         # Initialize Gemini model with tools
-        model = genai.GenerativeModel(model_name="gemini-1.5-flash", tools=tools)
+        model = genai.GenerativeModel(model_name="gemini-2.5-flash", tools=tools, system_instruction=system_instruction)
         
         # We can construct a history from session_context if provided.
         # For keeping it robust, we'll start a fresh chat or use manual history construction
