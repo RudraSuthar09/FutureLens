@@ -122,6 +122,69 @@ def detect_target_column(df: pd.DataFrame, date_col: str) -> str:
         cv_scores[col] = std_val / abs(mean_val) if mean_val != 0 else 0.0
     return max(cv_scores, key=cv_scores.get)
 
+def build_dataset_profile(df: pd.DataFrame, max_categories: int = 8, sample_rows: int = 12) -> dict:
+    profile = {
+        "columns": df.columns.tolist(),
+        "dtypes": {c: str(df[c].dtype) for c in df.columns},
+        "numeric_summary": {},
+        "categorical_summary": {},
+        "sample_rows": [],
+    }
+
+    # numeric summary
+    num_cols = df.select_dtypes(include=["number"]).columns.tolist()
+    for c in num_cols:
+        s = df[c].dropna()
+        if len(s) == 0:
+            continue
+        profile["numeric_summary"][c] = {
+            "count": int(s.shape[0]),
+            "mean": float(s.mean()),
+            "std": float(s.std()) if s.shape[0] > 1 else 0.0,
+            "min": float(s.min()),
+            "max": float(s.max()),
+        }
+
+    # categorical summary (object/category/bool)
+    cat_cols = df.select_dtypes(include=["object", "category", "bool"]).columns.tolist()
+    for c in cat_cols:
+        s = df[c].astype(str).replace({"nan": np.nan}).dropna()
+        if len(s) == 0:
+            continue
+        vc = s.value_counts().head(max_categories)
+        profile["categorical_summary"][c] = [{"value": k, "count": int(v)} for k, v in vc.items()]
+
+    # sample rows (sanitized)
+    try:
+        profile["sample_rows"] = df.head(sample_rows).fillna("").to_dict(orient="records")
+    except Exception:
+        profile["sample_rows"] = []
+
+    return profile
+
+def pick_group_column(df: pd.DataFrame) -> str | None:
+    """
+    Pick a categorical column suitable for group forecasting (Region/Category/etc.).
+    """
+    preferred = ["region", "category", "segment", "product", "store", "country", "city"]
+    cat_cols = df.select_dtypes(include=["object", "category"]).columns.tolist()
+    if not cat_cols:
+        return None
+
+    # prefer by name
+    for p in preferred:
+        for c in cat_cols:
+            if p in c.lower():
+                return c
+
+    # fallback: reasonable cardinality
+    for c in cat_cols:
+        nun = df[c].nunique(dropna=True)
+        if 2 <= nun <= 30:
+            return c
+
+    return None
+
 
 @app.post("/upload")
 async def upload_file(file: UploadFile = File(...)):
@@ -130,7 +193,17 @@ async def upload_file(file: UploadFile = File(...)):
     """
     try:
         contents = await file.read()
-        df = pd.read_csv(io.BytesIO(contents))
+
+        # Robust CSV decoding (handles Windows/Excel CSVs with bytes like 0xA0)
+        try:
+            df = pd.read_csv(io.BytesIO(contents), encoding="utf-8")
+        except UnicodeDecodeError:
+            try:
+                df = pd.read_csv(io.BytesIO(contents), encoding="cp1252")
+            except UnicodeDecodeError:
+                df = pd.read_csv(io.BytesIO(contents), encoding="latin1")
+
+        dataset_profile = build_dataset_profile(df)
 
         # --- Step 1: detect date column (with 1980 guard) ---
         try:
@@ -144,7 +217,7 @@ async def upload_file(file: UploadFile = File(...)):
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
 
-        # --- Step 3: detect additional feature columns ---
+        # --- Step 3: detect additional feature columns (numeric only) ---
         num_cols = df.select_dtypes(include=["number"]).columns.tolist()
         feature_cols = [
             c for c in num_cols
@@ -152,14 +225,49 @@ async def upload_file(file: UploadFile = File(...)):
             and df[c].isna().sum() / len(df) <= 0.30
         ]
 
-        # --- Step 4: build working frame (date + sales) ---
-        df_work = df[[original_date_col, original_target_col]].copy()
+        # --- Step 4: build working frame (date + sales + optional numeric features) ---
+        use_cols = [original_date_col, original_target_col] + feature_cols
+        df_work = df[use_cols].copy()
+
         df_work.rename(columns={original_date_col: "date", original_target_col: "sales"}, inplace=True)
-        df_work["date"] = pd.to_datetime(df_work["date"], infer_datetime_format=True, errors="coerce", utc=False)
+
+        # Parse date (remove deprecated infer_datetime_format)
+        df_work["date"] = pd.to_datetime(df_work["date"], errors="coerce", utc=False)
         df_work = df_work.dropna(subset=["date"])
-        df_work = df_work.groupby("date")["sales"].mean().reset_index()
+
+        # Coerce sales to numeric (handles commas and NBSP)
+        df_work["sales"] = pd.to_numeric(
+            df_work["sales"].astype(str).str.replace(",", "").str.replace("\xa0", " ").str.strip(),
+            errors="coerce",
+        )
+
+        # Coerce feature cols too (safe)
+        for c in feature_cols:
+            if c in df_work.columns:
+                df_work[c] = pd.to_numeric(
+                    df_work[c].astype(str).str.replace(",", "").str.replace("\xa0", " ").str.strip(),
+                    errors="coerce",
+                )
+
+        df_work = df_work.dropna(subset=["sales"])
+
+        # Aggregate duplicate dates (mean)
+        agg_map = {"sales": "mean"}
+        for c in feature_cols:
+            if c in df_work.columns:
+                agg_map[c] = "mean"
+
+        df_work = df_work.groupby("date", as_index=False).agg(agg_map)
         df_work = df_work.sort_values("date").reset_index(drop=True)
+
+        # Fill missing
         df_work["sales"] = df_work["sales"].ffill().bfill()
+        for c in feature_cols:
+            if c in df_work.columns:
+                df_work[c] = df_work[c].ffill().bfill()
+
+        if len(df_work) < 20:
+            raise HTTPException(status_code=400, detail="Dataset too small — need at least 20 rows after cleaning.")
 
         session_id = str(uuid.uuid4())
         save_upload(session_id, file.filename, len(df_work), df_work.columns.tolist())
@@ -187,22 +295,81 @@ async def upload_file(file: UploadFile = File(...)):
 
         # --- Step 8: truth meter ---
         truth_meter = compute_truth_meter(model_mape, baseline_mape)
+        forecast_results["truth_score"] = truth_meter.get("score", truth_score)
+
+        # --- Step 8.5: lightweight group forecasts (top 5 groups) ---
+        group_forecasts = None
+        group_col = pick_group_column(df)
+
+        if group_col:
+            try:
+                df_tmp = df[[original_date_col, original_target_col, group_col]].copy()
+                df_tmp[original_date_col] = pd.to_datetime(df_tmp[original_date_col], errors="coerce", utc=False)
+                df_tmp[original_target_col] = pd.to_numeric(
+                    df_tmp[original_target_col].astype(str).str.replace(",", "").str.replace("\xa0", " ").str.strip(),
+                    errors="coerce",
+                )
+                df_tmp = df_tmp.dropna(subset=[original_date_col, original_target_col, group_col])
+
+                top_groups = (
+                    df_tmp.groupby(group_col)[original_target_col]
+                    .sum()
+                    .sort_values(ascending=False)
+                    .head(5)
+                    .index
+                    .tolist()
+                )
+
+                group_forecasts = []
+                for g in top_groups:
+                    gdf = df_tmp[df_tmp[group_col] == g][[original_date_col, original_target_col]].copy()
+                    gdf.rename(columns={original_date_col: "date", original_target_col: "sales"}, inplace=True)
+                    gdf = gdf.dropna(subset=["date", "sales"])
+                    gdf = gdf.groupby("date")["sales"].mean().reset_index().sort_values("date").reset_index(drop=True)
+                    gdf["sales"] = gdf["sales"].ffill().bfill()
+
+                    if len(gdf) < 20:
+                        continue
+
+                    gres = run_forecast(gdf)
+                    last_hist = float(gres["historical"][-1]) if gres.get("historical") else 0.0
+                    last_fc = float(gres["forecast"][-1]) if gres.get("forecast") else 0.0
+                    pct = ((last_fc - last_hist) / abs(last_hist) * 100.0) if last_hist != 0 else 0.0
+
+                    group_forecasts.append(
+                        {
+                            "group_col": group_col,
+                            "group": str(g),
+                            "forecast_horizon": gres.get("forecast_horizon"),
+                            "expected_change_percent": round(pct, 2),
+                            "last_hist": last_hist,
+                            "last_forecast": last_fc,
+                        }
+                    )
+
+                group_forecasts.sort(key=lambda x: x["expected_change_percent"], reverse=True)
+            except Exception as e:
+                logger.warning(f"Group forecasts skipped due to error: {e}")
+                group_forecasts = None
 
         # --- Step 9: assemble full response ---
+        forecast_results["truth_meter"] = truth_meter
         forecast_results["session_id"] = session_id
         forecast_results["anomalies"] = anomalies
         forecast_results["shap_results"] = shap_results
         forecast_results["rca_explanation"] = rca_explanation
-        forecast_results["truth_meter"] = truth_meter
         forecast_results["detected_columns"] = {
             "date": original_date_col,
             "target": original_target_col,
             "features": feature_cols,
         }
+        forecast_results["dataset_profile"] = dataset_profile
+        forecast_results["group_forecasts"] = group_forecasts
 
         sanitized_results = _sanitize_for_json(forecast_results)
 
-        save_forecast(session_id, sanitized_results, truth_score)
+        # IMPORTANT: save forecast using the same truth_score the UI uses
+        save_forecast(session_id, sanitized_results, sanitized_results.get("truth_score", truth_score))
         save_anomalies(session_id, sanitized_results["anomalies"])
 
         return sanitized_results
@@ -252,11 +419,15 @@ async def chat_interaction(req: ChatRequest):
         forecast_data = get_forecast(req.session_id) or {}
         anomalies_data = get_anomalies(req.session_id) or []
 
+        dataset_profile = forecast_data.get("dataset_profile", {})
+        group_forecasts = forecast_data.get("group_forecasts", None)
+
         # --- Build rich, accurate system prompt ---
         historical = forecast_data.get("historical", [])
         hist_dates = forecast_data.get("historical_dates", [])
         future_dates = forecast_data.get("dates", [])
         truth_score = forecast_data.get("truth_score", 0.0)
+        truth_meter = forecast_data.get("truth_meter", {})
         rca = forecast_data.get("rca_explanation", "Not available.")
         detected_freq = forecast_data.get("detected_freq", "unknown")
         forecast_horizon = forecast_data.get("forecast_horizon", len(future_dates))
@@ -298,9 +469,30 @@ async def chat_interaction(req: ChatRequest):
 
         warning_line = f"\n⚠️ Data quality note: {dq_warning}" if dq_warning else ""
 
+        # Keep prompt lightweight: include only small summaries
+        cols_list = dataset_profile.get("columns", [])
+        cat_summary = dataset_profile.get("categorical_summary", {})
+        num_summary = dataset_profile.get("numeric_summary", {})
+
+        group_hint = ""
+        if group_forecasts:
+            group_col = group_forecasts[0].get("group_col", "group")
+            top_lines = []
+            for gf in group_forecasts[:5]:
+                top_lines.append(f"- {gf.get('group')}: {gf.get('expected_change_percent')}% expected change")
+            group_hint = (
+                f"\nGroup forecast available by `{group_col}` (top growth):\n" + "\n".join(top_lines)
+            )
+
         system_msg = f"""You are FutureLens, an AI forecasting assistant.
 
+You must:
+- Handle typos and minor misspellings.
+- Answer concisely for non-experts (2���6 bullets).
+- Be transparent about uncertainty and limitations.
+
 Dataset context:
+- Columns available: {cols_list}
 - Historical data: {start_date} to {end_date}
 - Data frequency: {detected_freq}
 - Total rows: {total_rows}
@@ -310,16 +502,19 @@ Forecast generated:
 - Forecast period: {forecast_start} to {forecast_end}
 - Horizon: {forecast_horizon} {detected_freq} periods ahead
 - Confidence level: {confidence_level}%
-- Model accuracy: {truth_score:.1f}% better than baseline
+- Truth meter: {truth_meter.get("message", f"{truth_score:.1f}% vs baseline")}
 - Root Cause Analysis: {rca}
 {warning_line}
 
+Categorical columns (top values): {list(cat_summary.keys())}
+Numeric columns: {list(num_summary.keys())}
+{group_hint}
+
 {anomaly_summary}
 
-Always answer based on ACTUAL dates above.
-Never say you cannot predict — always give your best estimate based on the trend direction.
-When asked about future dates beyond the forecast window, extrapolate the trend and say it is an estimate.
-Do NOT ask the user to provide data you already have."""
+If user asks "which region/category will expand", use group forecast if present.
+If no group forecast is available, explain that grouping requires a categorical column and suggest which columns could be used.
+"""
 
         response = chat(req.message, context, system_instruction=system_msg)
         save_chat(req.session_id, req.message, response)

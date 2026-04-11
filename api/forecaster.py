@@ -7,29 +7,107 @@ from typing import Dict, Any, List, Optional
 
 
 # ---------------------------------------------------------------------------
-# Helper: detect date column with 1980 sanity check
+# Helper: detect date column with 1980 sanity check (generalized + robust)
 # ---------------------------------------------------------------------------
 
 def detect_date_column(df: pd.DataFrame) -> str:
     """
-    Loops through every column and returns the first one that:
-    - Can be parsed as datetime with valid_ratio >= 0.8
-    - Has a max parsed date after 1980-01-01 (guards against Unix-epoch garbage)
+    Detect the most likely date/time column.
 
-    Raises ValueError if no column passes both checks.
+    Strategy:
+    - Prefer columns whose *names* look like date/time fields.
+    - For each candidate, attempt:
+        1) parse as datetime strings
+        2) parse as numeric epoch (seconds or milliseconds)
+    - Accept if >=80% parse success AND max date > 1980-01-01.
+
+    Raises ValueError if no column passes checks.
     """
+    if df is None or df.shape[0] == 0 or df.shape[1] == 0:
+        raise ValueError("Dataset is empty — no columns available for date detection.")
+
     cutoff = pd.Timestamp("1980-01-01")
-    for col in df.columns:
+
+    # Prefer likely date columns by name
+    preferred_name_tokens = ["date", "datetime", "time", "timestamp", "ds"]
+    cols = list(df.columns)
+
+    def _name_score(c: str) -> int:
+        cl = str(c).strip().lower()
+        # higher score for exact/common names
+        if cl in ("date", "datetime", "timestamp", "time", "ds"):
+            return 100
+        return sum(10 for t in preferred_name_tokens if t in cl)
+
+    # Order columns: likely date names first, then everything else
+    cols_sorted = sorted(cols, key=_name_score, reverse=True)
+
+    def _try_parse_datetime_series(s: pd.Series) -> pd.Series:
+        # 1) Try normal datetime parsing
+        parsed = pd.to_datetime(s, errors="coerce", utc=False)
+        return parsed
+
+    def _try_parse_epoch_series(s: pd.Series) -> Optional[pd.Series]:
+        """
+        If series is numeric-ish, attempt epoch seconds and epoch milliseconds.
+        Returns parsed series if it looks plausible, else None.
+        """
+        # Coerce to numeric
+        s_num = pd.to_numeric(s, errors="coerce")
+        if s_num.notna().sum() < max(3, int(0.5 * len(s))):
+            return None
+
+        # Heuristic: decide unit by magnitude
+        # seconds since epoch ~ 1e9-2e9, ms since epoch ~ 1e12-2e13
+        med = float(s_num.dropna().median())
+        unit = None
+        if 1e12 <= med <= 3e13:
+            unit = "ms"
+        elif 1e9 <= med <= 3e10:
+            unit = "s"
+        else:
+            return None
+
+        parsed = pd.to_datetime(s_num, unit=unit, errors="coerce", utc=False)
+        return parsed
+
+    best_col = None
+    best_ratio = 0.0
+
+    for col in cols_sorted:
         try:
-            parsed = pd.to_datetime(df[col], infer_datetime_format=True, errors="coerce")
+            s = df[col]
+
+            # Try string datetime
+            parsed = _try_parse_datetime_series(s)
+
+            # If that fails badly, try epoch
             valid = parsed.notna()
-            valid_ratio = valid.sum() / len(df)
+            valid_ratio = float(valid.sum()) / float(len(df)) if len(df) else 0.0
+
+            if valid_ratio < 0.8:
+                parsed_epoch = _try_parse_epoch_series(s)
+                if parsed_epoch is not None:
+                    parsed = parsed_epoch
+                    valid = parsed.notna()
+                    valid_ratio = float(valid.sum()) / float(len(df)) if len(df) else 0.0
+
             if valid_ratio >= 0.8:
-                if parsed[valid].max() > cutoff:
-                    return col
+                max_dt = parsed[valid].max()
+                if pd.notna(max_dt) and max_dt > cutoff:
+                    # If multiple columns qualify, pick the one with highest valid_ratio
+                    # (ties broken by name ordering already)
+                    if valid_ratio > best_ratio:
+                        best_ratio = valid_ratio
+                        best_col = col
+
         except Exception:
             continue
-    raise ValueError("No valid date column found in dataset")
+
+    if best_col is None:
+        raise ValueError("No valid date column found in dataset")
+
+    return best_col
 
 
 # ---------------------------------------------------------------------------
@@ -179,7 +257,6 @@ def run_forecast(df: pd.DataFrame) -> Dict[str, Any]:
             if len(residual_history) >= lag:
                 lag_vals[f"lag{lag}"] = [residual_history[-lag]]
             else:
-                # Not enough history yet: use mean of what we have
                 fallback = float(np.mean(residual_history)) if residual_history else 0.0
                 lag_vals[f"lag{lag}"] = [fallback]
         window_slice = residual_history[-rolling_window:] if len(residual_history) >= rolling_window else residual_history
@@ -234,7 +311,7 @@ def run_forecast(df: pd.DataFrame) -> Dict[str, Any]:
     else:
         model_mape, baseline_mape = 10.0, 20.0
 
-    truth_score = max(0.0, (baseline_mape - model_mape) / baseline_mape * 100) if baseline_mape > 0 else 0.0
+    truth_score = ((baseline_mape - model_mape) / baseline_mape * 100) if baseline_mape > 0 else 0.0
 
     # 11. Output dates
     future_dates = (

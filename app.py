@@ -275,6 +275,7 @@ if st.session_state.data:
     upper = data.get("upper", [])
     anomalies = data.get("anomalies", [])
     truth_score = data.get("truth_score", 0.0)
+    truth_meter = data.get("truth_meter", {})
     detected_freq = data.get("detected_freq", "W")
     forecast_horizon = data.get("forecast_horizon", len(future_dates))
     confidence_level = data.get("confidence_level", 90)
@@ -284,12 +285,14 @@ if st.session_state.data:
     target_col_name = detected_cols.get("target", "target")
     date_col_name = detected_cols.get("date", "date")
     feature_cols = detected_cols.get("features", [])
+    dataset_profile = data.get("dataset_profile", {})
+    group_forecasts = data.get("group_forecasts", None)
 
     # Show detected-columns info box right after upload
     st.info(
         f"📊 Forecasting **'{target_col_name}'** using **'{date_col_name}'** as the date. "
         f"Detected frequency: **{detected_freq}**. "
-        f"{len(feature_cols)} additional feature column(s) found."
+        f"{len(feature_cols)} additional numeric feature column(s) found."
     )
 
     tab1, tab2, tab3, tab4 = st.tabs(["Forecast", "Root Cause", "Scenario", "Chat"])
@@ -298,9 +301,13 @@ if st.session_state.data:
     with tab1:
         st.subheader("Predictive Forecast Analysis")
 
+        # Convert dates for plotting
+        historical_dates_dt = pd.to_datetime(historical_dates, errors="coerce") if historical_dates else []
+        future_dates_dt = pd.to_datetime(future_dates, errors="coerce") if future_dates else []
+
         # --- Validate dates before plotting ---
-        if future_dates:
-            min_year = pd.to_datetime(future_dates).min().year
+        if future_dates_dt is not None and len(future_dates_dt) > 0:
+            min_year = pd.to_datetime(future_dates_dt).min().year
             if min_year < 1980:
                 st.error(
                     "⚠️ Date parsing error detected — dates appear to be from 1970. "
@@ -313,7 +320,7 @@ if st.session_state.data:
         # Historical line
         fig.add_trace(
             go.Scatter(
-                x=historical_dates,
+                x=historical_dates_dt if len(historical_dates_dt) else historical_dates,
                 y=historical,
                 line=dict(color="royalblue", width=2),
                 mode="lines",
@@ -326,7 +333,7 @@ if st.session_state.data:
             fig.add_trace(
                 go.Scatter(
                     name="Lower Bound",
-                    x=future_dates,
+                    x=future_dates_dt if len(future_dates_dt) else future_dates,
                     y=lower,
                     mode="lines",
                     line=dict(width=0),
@@ -336,7 +343,7 @@ if st.session_state.data:
             fig.add_trace(
                 go.Scatter(
                     name=f"{confidence_level}% Confidence Band",
-                    x=future_dates,
+                    x=future_dates_dt if len(future_dates_dt) else future_dates,
                     y=upper,
                     mode="lines",
                     marker=dict(color="#A20067"),
@@ -351,7 +358,7 @@ if st.session_state.data:
         if forecast and future_dates:
             fig.add_trace(
                 go.Scatter(
-                    x=future_dates,
+                    x=future_dates_dt if len(future_dates_dt) else future_dates,
                     y=forecast,
                     line=dict(color="orange", width=2, dash="dash"),
                     mode="lines",
@@ -361,32 +368,47 @@ if st.session_state.data:
 
         # Anomaly markers
         if anomalies:
-            anom_dates = [a['date'] for a in anomalies]
-            anom_values = [a['actual'] for a in anomalies]
-            fig.add_trace(go.Scatter(
-                x=anom_dates, y=anom_values, mode='markers',
-                marker=dict(color='#C8102E', size=12, symbol='x', line=dict(width=2, color='white')),
-                name='Anomalies'
-            ))
+            anom_dates_raw = [a.get("date") for a in anomalies]
+            anom_values = [a.get("actual") for a in anomalies]
+            anom_dates_dt = pd.to_datetime(anom_dates_raw, errors="coerce")
 
-        # Vertical dashed line at forecast start
-        if historical_dates:
-            last_hist = historical_dates[-1]
+            fig.add_trace(
+                go.Scatter(
+                    x=anom_dates_dt,
+                    y=anom_values,
+                    mode="markers",
+                    marker=dict(color="red", size=10, symbol="x"),
+                    name="Anomalies",
+                )
+            )
 
-            fig.add_vline(
-                x=last_hist,
-                line_dash="dash",
-                line_color="gray",
+        # Vertical dashed line at forecast start (safe for datetime/string x)
+        if historical_dates_dt is not None and len(historical_dates_dt) > 0 and pd.notna(historical_dates_dt[-1]):
+            vline_x = historical_dates_dt[-1]
+            if isinstance(vline_x, pd.Timestamp):
+                vline_x = vline_x.to_pydatetime()
+
+            fig.add_shape(
+                type="line",
+                x0=vline_x,
+                x1=vline_x,
+                y0=0,
+                y1=1,
+                xref="x",
+                yref="paper",
+                line=dict(color="gray", dash="dash"),
             )
             fig.add_annotation(
-                x=last_hist,
-                y=1.0,
+                x=vline_x,
+                y=1,
+                xref="x",
                 yref="paper",
                 text="Forecast starts here",
-                xanchor="right",
                 showarrow=False,
-                font=dict(color="gray", size=11),
-                yshift=10
+                xanchor="left",
+                yanchor="top",
+                yshift=10,
+                font=dict(color="gray"),
             )
 
         fig.update_layout(
@@ -412,16 +434,30 @@ if st.session_state.data:
                 summary_lines.append(f"⚠️ {dq_warning}")
             st.info("\n\n".join(summary_lines))
 
+        # Group forecast ranking (if available)
+        if group_forecasts:
+            st.subheader("Group Growth Outlook")
+            st.caption("Forecasted expected change by top groups (lightweight group forecast).")
+            st.dataframe(group_forecasts, use_container_width=True)
+
+        # Dataset overview
+        if dataset_profile:
+            with st.expander("Dataset overview (detected columns)"):
+                st.write("Columns:", dataset_profile.get("columns", []))
+                st.write("Categorical columns (top values):")
+                st.json(dataset_profile.get("categorical_summary", {}))
+                st.write("Numeric columns summary:")
+                st.json(dataset_profile.get("numeric_summary", {}))
+
         # Truth Meter
         st.subheader("Truth Meter")
-        if truth_score > 10:
-            color = "green"
-        elif truth_score > 0:
-            color = "orange"
-        else:
-            color = "red"
-        st.progress(min(int(truth_score), 100))
-        st.markdown(f"**:{color}[Model is {truth_score:.1f}% better than baseline]**")
+        msg = truth_meter.get("message", f"Truth score: {truth_score:.1f}% vs baseline")
+        color = truth_meter.get("color", "red")
+
+        # For progress bar: map score to 0..100 (keep display message separate)
+        score_for_bar = int(min(max(float(truth_meter.get("score", truth_score)) + 50.0, 0.0), 100.0))
+        st.progress(score_for_bar)
+        st.markdown(f"**:{color}[{msg}]**")
 
     # === TAB 2: Root Cause ===
     with tab2:
@@ -501,7 +537,7 @@ if st.session_state.data:
             fig_sc = go.Figure()
             fig_sc.add_trace(
                 go.Scatter(
-                    x=sc_dates,
+                    x=pd.to_datetime(sc_dates, errors="coerce"),
                     y=baseline_vals,
                     line=dict(color="#5A287D", dash="dash"),
                     name="Baseline",
@@ -509,7 +545,7 @@ if st.session_state.data:
             )
             fig_sc.add_trace(
                 go.Scatter(
-                    x=sc_dates,
+                    x=pd.to_datetime(sc_dates, errors="coerce"),
                     y=scenario_vals,
                     line=dict(color="#A20067", width=3),
                     name=label,

@@ -82,28 +82,78 @@ def detect_anomalies(df: pd.DataFrame, forecast_dict: Dict[str, Any]) -> List[Di
 
 
 def compute_truth_meter(model_mape: float, baseline_mape: float) -> Dict[str, Any]:
-    """Compares model MAPE to baseline MAPE and returns a confidence assessment."""
+    """
+    Compares model MAPE to baseline MAPE.
+    - Shows both MAPEs
+    - Allows negative improvements (model worse than baseline)
+    - Sets reliability threshold more transparently
+    """
     try:
-        if baseline_mape == 0:
-            return {"reliable": False, "color": "red", "message": "Baseline MAPE is 0 — invalid test"}
+        if baseline_mape is None or baseline_mape == 0:
+            return {"reliable": False, "color": "red", "message": "Baseline MAPE is 0 — invalid comparison", "score": 0.0}
 
-        improvement = (baseline_mape - model_mape) / baseline_mape
+        score = (baseline_mape - model_mape) / baseline_mape * 100.0
 
-        if improvement > 0.10:
+        if score >= 10:
             return {
                 "reliable": True,
                 "color": "green",
-                "message": f"High confidence — MAPE {model_mape:.1f}%",
+                "message": f"High confidence — Model MAPE {model_mape:.1f}% vs Baseline {baseline_mape:.1f}% ({score:+.1f}%)",
+                "score": score,
+            }
+        elif score >= 0:
+            return {
+                "reliable": False,
+                "color": "orange",
+                "message": f"Low confidence — Model MAPE {model_mape:.1f}% vs Baseline {baseline_mape:.1f}% ({score:+.1f}%)",
+                "score": score,
             }
         else:
-            diff = max(0.0, improvement * 100)
             return {
                 "reliable": False,
                 "color": "red",
-                "message": f"Model only {diff:.1f}% better — low trust",
+                "message": f"Model worse than baseline — Model MAPE {model_mape:.1f}% vs Baseline {baseline_mape:.1f}% ({score:+.1f}%)",
+                "score": score,
             }
     except Exception as e:
         import logging
-
         logging.error(f"Error in truth meter: {e}")
-        return {"reliable": False, "color": "red", "message": "Error calculating truth meter."}
+        return {"reliable": False, "color": "red", "message": "Error calculating truth meter.", "score": 0.0}
+    """
+    Compares model MAPE to baseline MAPE.
+    - Shows both MAPEs
+    - Allows negative improvements (model worse than baseline)
+    - Sets reliability threshold more transparently
+    """
+    try:
+        if baseline_mape is None or baseline_mape == 0:
+            return {"reliable": False, "color": "red", "message": "Baseline MAPE is 0 — invalid comparison", "score": 0.0}
+
+        score = (baseline_mape - model_mape) / baseline_mape * 100.0
+
+        # simple thresholds
+        if score >= 10:
+            return {
+                "reliable": True,
+                "color": "green",
+                "message": f"High confidence — Model MAPE {model_mape:.1f}% vs Baseline {baseline_mape:.1f}% ({score:+.1f}%)",
+                "score": score,
+            }
+        elif score >= 0:
+            return {
+                "reliable": False,
+                "color": "orange",
+                "message": f"Low confidence — Model MAPE {model_mape:.1f}% vs Baseline {baseline_mape:.1f}% ({score:+.1f}%)",
+                "score": score,
+            }
+        else:
+            return {
+                "reliable": False,
+                "color": "red",
+                "message": f"Model worse than baseline — Model MAPE {model_mape:.1f}% vs Baseline {baseline_mape:.1f}% ({score:+.1f}%)",
+                "score": score,
+            }
+    except Exception as e:
+        import logging
+        logging.error(f"Error in truth meter: {e}")
+        return {"reliable": False, "color": "red", "message": "Error calculating truth meter.", "score": 0.0}
