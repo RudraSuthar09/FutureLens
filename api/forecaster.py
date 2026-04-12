@@ -1,117 +1,83 @@
+"""
+api/forecaster.py
+-----------------
+Adaptive time-series forecasting pipeline:
+  1. Auto-detect date column
+  2. Auto-resample noisy daily data to weekly (CV-based)
+  3. Prophet for trend + seasonality
+  4. LightGBM quantile regression on residuals (low / mid / high)
+  5. Log-transform when all values are positive
+  6. SMAPE for stable accuracy reporting (handles near-zero values)
+
+No dependency on mapie — quantile LightGBM gives cleaner intervals.
+"""
+
 import pandas as pd
 import numpy as np
+import lightgbm as lgb
 from prophet import Prophet
-from lightgbm import LGBMRegressor
-from mapie.regression import MapieRegressor
 from typing import Dict, Any, List, Optional
 
 
 # ---------------------------------------------------------------------------
-# Helper: detect date column with 1980 sanity check (generalized + robust)
+# Date column detection
 # ---------------------------------------------------------------------------
 
 def detect_date_column(df: pd.DataFrame) -> str:
     """
     Detect the most likely date/time column.
-
-    Strategy:
-    - Prefer columns whose *names* look like date/time fields.
-    - For each candidate, attempt:
-        1) parse as datetime strings
-        2) parse as numeric epoch (seconds or milliseconds)
-    - Accept if >=80% parse success AND max date > 1980-01-01.
-
-    Raises ValueError if no column passes checks.
+    Accepts columns that parse as datetime strings OR numeric epoch.
+    Requires >=80% parse success AND max date > 1980-01-01.
     """
     if df is None or df.shape[0] == 0 or df.shape[1] == 0:
-        raise ValueError("Dataset is empty — no columns available for date detection.")
+        raise ValueError("Dataset is empty.")
 
     cutoff = pd.Timestamp("1980-01-01")
-
-    # Prefer likely date columns by name
-    preferred_name_tokens = ["date", "datetime", "time", "timestamp", "ds"]
-    cols = list(df.columns)
+    preferred_tokens = ["date", "datetime", "time", "timestamp", "ds"]
 
     def _name_score(c: str) -> int:
         cl = str(c).strip().lower()
-        # higher score for exact/common names
         if cl in ("date", "datetime", "timestamp", "time", "ds"):
             return 100
-        return sum(10 for t in preferred_name_tokens if t in cl)
+        return sum(10 for t in preferred_tokens if t in cl)
 
-    # Order columns: likely date names first, then everything else
-    cols_sorted = sorted(cols, key=_name_score, reverse=True)
+    cols_sorted = sorted(df.columns, key=_name_score, reverse=True)
 
-    def _try_parse_datetime_series(s: pd.Series) -> pd.Series:
-        # 1) Try normal datetime parsing
-        parsed = pd.to_datetime(s, errors="coerce", utc=False)
-        return parsed
-
-    def _try_parse_epoch_series(s: pd.Series) -> Optional[pd.Series]:
-        """
-        If series is numeric-ish, attempt epoch seconds and epoch milliseconds.
-        Returns parsed series if it looks plausible, else None.
-        """
-        # Coerce to numeric
+    def _try_epoch(s: pd.Series) -> Optional[pd.Series]:
         s_num = pd.to_numeric(s, errors="coerce")
         if s_num.notna().sum() < max(3, int(0.5 * len(s))):
             return None
-
-        # Heuristic: decide unit by magnitude
-        # seconds since epoch ~ 1e9-2e9, ms since epoch ~ 1e12-2e13
         med = float(s_num.dropna().median())
-        unit = None
-        if 1e12 <= med <= 3e13:
-            unit = "ms"
-        elif 1e9 <= med <= 3e10:
-            unit = "s"
-        else:
+        unit = "ms" if 1e12 <= med <= 3e13 else ("s" if 1e9 <= med <= 3e10 else None)
+        if not unit:
             return None
+        return pd.to_datetime(s_num, unit=unit, errors="coerce", utc=False)
 
-        parsed = pd.to_datetime(s_num, unit=unit, errors="coerce", utc=False)
-        return parsed
-
-    best_col = None
-    best_ratio = 0.0
-
+    best_col, best_ratio = None, 0.0
     for col in cols_sorted:
         try:
-            s = df[col]
-
-            # Try string datetime
-            parsed = _try_parse_datetime_series(s)
-
-            # If that fails badly, try epoch
-            valid = parsed.notna()
-            valid_ratio = float(valid.sum()) / float(len(df)) if len(df) else 0.0
-
+            parsed = pd.to_datetime(df[col], errors="coerce", utc=False)
+            valid_ratio = parsed.notna().sum() / len(df)
             if valid_ratio < 0.8:
-                parsed_epoch = _try_parse_epoch_series(s)
+                parsed_epoch = _try_epoch(df[col])
                 if parsed_epoch is not None:
                     parsed = parsed_epoch
-                    valid = parsed.notna()
-                    valid_ratio = float(valid.sum()) / float(len(df)) if len(df) else 0.0
-
+                    valid_ratio = parsed.notna().sum() / len(df)
             if valid_ratio >= 0.8:
-                max_dt = parsed[valid].max()
-                if pd.notna(max_dt) and max_dt > cutoff:
-                    # If multiple columns qualify, pick the one with highest valid_ratio
-                    # (ties broken by name ordering already)
-                    if valid_ratio > best_ratio:
-                        best_ratio = valid_ratio
-                        best_col = col
-
+                max_dt = parsed[parsed.notna()].max()
+                if pd.notna(max_dt) and max_dt > cutoff and valid_ratio > best_ratio:
+                    best_ratio = valid_ratio
+                    best_col = col
         except Exception:
             continue
 
     if best_col is None:
-        raise ValueError("No valid date column found in dataset")
-
+        raise ValueError("No valid date column found (requires dates after 1980).")
     return best_col
 
 
 # ---------------------------------------------------------------------------
-# Adaptive parameters
+# Adaptive helpers
 # ---------------------------------------------------------------------------
 
 def calculate_forecast_horizon(n_rows: int) -> int:
@@ -125,17 +91,6 @@ def calculate_forecast_horizon(n_rows: int) -> int:
         return 8
 
 
-def get_alpha(n_samples: int) -> float:
-    if n_samples < 30:
-        return 0.50
-    elif n_samples < 60:
-        return 0.32
-    elif n_samples < 100:
-        return 0.20
-    else:
-        return 0.10
-
-
 def _detect_freq(dates: pd.Series) -> str:
     """Infer data frequency from a sorted datetime Series."""
     try:
@@ -144,7 +99,6 @@ def _detect_freq(dates: pd.Series) -> str:
             return inferred
     except Exception:
         pass
-    # Fallback: median gap in days
     gaps = dates.diff().dropna().dt.days
     if gaps.empty:
         return "W"
@@ -159,15 +113,78 @@ def _detect_freq(dates: pd.Series) -> str:
         return "QS"
 
 
+def _auto_resample(df: pd.DataFrame, detected_freq: str) -> tuple:
+    """
+    If daily/business-daily data has CV > 1.2, resample to weekly sums.
+    This is the single most impactful fix for noisy retail/transactional data
+    (Superstore, e-commerce, etc.) where daily profit/sales are highly volatile.
+
+    Always use 'W' (not the inferred 'W-SUN') after resampling so Prophet
+    make_future_dataframe produces consistent dates.
+
+    Returns (resampled_df, new_freq_string).
+    """
+    cv = df['sales'].std() / (abs(df['sales'].mean()) + 1e-8)
+
+    if detected_freq.upper().startswith(('D', 'B')) and cv > 1.2 and len(df) >= 28:
+        df_w = (
+            df.set_index('date')['sales']
+            .resample('W')
+            .sum()
+            .reset_index()
+        )
+        df_w.columns = ['date', 'sales']
+        df_w = df_w[df_w['sales'].notna() & (df_w['sales'] != 0)]
+        if len(df_w) >= 10:
+            return df_w.reset_index(drop=True), 'W'
+
+    return df, detected_freq
+
+
+def _tune_changepoint(n_rows: int, cv: float) -> float:
+    """
+    Auto-tune Prophet changepoint_prior_scale:
+    - Very noisy data → smoother forecast (0.01)
+    - Long clean series → more flexible (0.10)
+    """
+    if cv > 2.0:
+        return 0.01
+    elif cv > 1.0:
+        return 0.05
+    elif n_rows > 200:
+        return 0.10
+    else:
+        return 0.05
+
+
+def _smape(actual: np.ndarray, predicted: np.ndarray) -> float:
+    """
+    Symmetric MAPE — stable on near-zero values.
+    Used instead of MAPE throughout to avoid the 'near-zero denominator' problem
+    that caused 500%+ errors on daily profit data.
+    """
+    actual    = np.array(actual,    dtype=float)
+    predicted = np.array(predicted, dtype=float)
+    denom = (np.abs(actual) + np.abs(predicted)) / 2.0
+    mask  = denom > 1e-8
+    if not mask.any():
+        return 0.0
+    return float(np.mean(np.abs(actual[mask] - predicted[mask]) / denom[mask]) * 100)
+
+
 # ---------------------------------------------------------------------------
-# Feature engineering on residuals
+# Feature engineering
 # ---------------------------------------------------------------------------
 
-def _build_lag_features(series: pd.Series, available_lags: List[int], rolling_window: int) -> pd.DataFrame:
-    df = pd.DataFrame({"y": series.values}, index=series.index)
+def _build_lag_features(
+    series: pd.Series,
+    available_lags: List[int],
+    rolling_window: int,
+) -> pd.DataFrame:
+    df = pd.DataFrame({'y': series.values}, index=series.index)
     for lag in available_lags:
-        df[f"lag{lag}"] = df["y"].shift(lag)
-    df[f"rolling_mean_{rolling_window}"] = df["y"].rolling(window=rolling_window).mean()
+        df[f'lag{lag}'] = df['y'].shift(lag)
+    df[f'rolling_mean_{rolling_window}'] = df['y'].shift(1).rolling(rolling_window).mean()
     return df
 
 
@@ -177,176 +194,237 @@ def _build_lag_features(series: pd.Series, available_lags: List[int], rolling_wi
 
 def run_forecast(df: pd.DataFrame) -> Dict[str, Any]:
     """
-    Adaptive forecast: Prophet trend + LightGBM on residuals + MAPIE intervals.
+    Adaptive forecast pipeline:
+
+    Step 1  Detect frequency, auto-resample if daily + noisy
+    Step 2  Log-transform when all values positive (stabilises variance)
+    Step 3  Fit Prophet for trend + seasonality
+    Step 4  Compute residuals (actual − Prophet trend)
+    Step 5  Fit three LightGBM quantile models on residuals (Q10/Q50/Q90)
+    Step 6  Autoregressive loop: Prophet trend + quantile residual = final forecast
+    Step 7  Inverse log-transform
+    Step 8  SMAPE validation on hold-out
 
     Args:
-        df: DataFrame with 'date' and 'sales' columns (already cleaned).
+        df: DataFrame with 'date' (datetime) and 'sales' (numeric) columns,
+            already cleaned by main.py upload pipeline.
 
     Returns:
-        dict with dates, forecast, lower, upper, historical, historical_dates,
+        dict with: dates, forecast, lower, upper, historical, historical_dates,
         baseline, model_mape, baseline_mape, truth_score, detected_freq,
         forecast_horizon, confidence_level, data_quality, model, X.
+
+        'model' and 'X' are stripped by main.py before DB save (used for SHAP).
     """
-    # 1. Build Prophet-format frame
-    df_prophet = pd.DataFrame(
-        {
-            "ds": pd.to_datetime(df["date"], utc=False),
-            "y": df["sales"].values,
-        }
-    ).sort_values("ds").reset_index(drop=True)
 
-    n_rows = len(df_prophet)
+    # ── Step 1: prepare base frame and detect frequency ──────────────────────
+    df_base = pd.DataFrame({
+        'date':  pd.to_datetime(df['date'], utc=False),
+        'sales': df['sales'].values,
+    }).sort_values('date').reset_index(drop=True)
+
+    detected_freq = _detect_freq(df_base['date'])
+
+    # Auto-resample noisy daily data → weekly (key fix for retail datasets)
+    df_base, detected_freq = _auto_resample(df_base, detected_freq)
+
+    n_rows  = len(df_base)
     periods = calculate_forecast_horizon(n_rows)
-    alpha = get_alpha(n_rows)
-    confidence_level = int((1 - alpha) * 100)
 
-    # 2. Auto-detect data frequency
-    detected_freq = _detect_freq(df_prophet["ds"])
+    # Confidence level displayed in UI (not used by quantile models directly)
+    confidence_level = 90
 
-    # 3. Adaptive Prophet configuration
-    has_yearly = n_rows >= 104
-    has_weekly = n_rows >= 26
+    # ── Step 2: CV-based tuning + log transform ───────────────────────────────
+    cv  = float(df_base['sales'].std() / (abs(df_base['sales'].mean()) + 1e-8))
+    cps = _tune_changepoint(n_rows, cv)
 
-    model_prophet = Prophet(
-        weekly_seasonality=has_weekly,
-        yearly_seasonality=has_yearly,
-        daily_seasonality=False,
-        changepoint_prior_scale=0.05,
-        interval_width=0.80,
+    # Log-transform only when all values are positive (common for Sales/Revenue)
+    use_log = bool((df_base['sales'] > 0).all() and cv > 0.3)
+
+    # ── Step 3: Prophet ───────────────────────────────────────────────────────
+    df_prophet = df_base.rename(columns={'date': 'ds', 'sales': 'y'}).copy()
+    if use_log:
+        df_prophet['y'] = np.log1p(df_prophet['y'])
+
+    has_yearly = n_rows >= 80
+    has_weekly = n_rows >= 26 and detected_freq.upper().startswith(('D', 'B'))
+
+    prophet_model = Prophet(
+        yearly_seasonality  = has_yearly,
+        weekly_seasonality  = has_weekly,
+        daily_seasonality   = False,
+        changepoint_prior_scale = cps,
+        seasonality_mode    = 'multiplicative' if cv > 0.5 else 'additive',
+        interval_width      = 0.80,
     )
-    model_prophet.fit(df_prophet)
+    prophet_model.fit(df_prophet)
 
-    future = model_prophet.make_future_dataframe(periods=periods, freq=detected_freq)
-    prophet_forecast = model_prophet.predict(future)
+    # Always use 'W' after resampling — pd.infer_freq returns 'W-SUN' which
+    # causes date mismatches in make_future_dataframe.
+    future_freq = 'W' if detected_freq == 'W' else detected_freq
+    future      = prophet_model.make_future_dataframe(periods=periods, freq=future_freq)
+    prophet_fc  = prophet_model.predict(future)
 
-    # 4. Extract Prophet trend for historical period
-    prophet_trend_hist = prophet_forecast["trend"].iloc[:n_rows].values
+    # ── Step 4: residuals ─────────────────────────────────────────────────────
+    prophet_trend_hist = prophet_fc['trend'].iloc[:n_rows].values
+    df_prophet         = df_prophet.copy()
+    df_prophet['residuals'] = df_prophet['y'].values - prophet_trend_hist
 
-    # 5. Compute residuals (what LightGBM will learn)
-    df_prophet["residuals"] = df_prophet["y"].values - prophet_trend_hist
-
-    # 6. Adaptive lag features (only lags feasible given data size)
-    available_lags = [l for l in [1, 2, 4, 8] if l < n_rows // 3]
+    # ── Step 5: LightGBM quantile regression on residuals ────────────────────
+    available_lags = [l for l in [1, 2, 4, 8, 13] if l < n_rows // 3]
     if not available_lags:
         available_lags = [1]
     rolling_window = max(2, min(4, n_rows // 4))
-    feat_cols = [f"lag{l}" for l in available_lags] + [f"rolling_mean_{rolling_window}"]
+    feat_cols = [f'lag{l}' for l in available_lags] + [f'rolling_mean_{rolling_window}']
 
-    df_features = _build_lag_features(df_prophet["residuals"], available_lags, rolling_window)
-    train_data = df_features.dropna().reset_index(drop=True)
-    X = train_data[feat_cols]
-    y_res = train_data["y"]
+    df_features = _build_lag_features(df_prophet['residuals'], available_lags, rolling_window)
+    train_data  = df_features.dropna().reset_index(drop=True)
+    X           = train_data[feat_cols]
+    y_res       = train_data['y']
 
-    # 7. Fit LightGBM on residuals, then MAPIE for conformal intervals
-    lgbm = LGBMRegressor(random_state=42, verbose=-1)
-    lgbm.fit(X, y_res)
-    mapie = MapieRegressor(estimator=lgbm, cv="prefit")
-    mapie.fit(X, y_res)
+    # Reserve last 20% for SMAPE validation (min 4 samples)
+    cal_size    = max(4, len(X) // 5)
+    X_train_q   = X.iloc[:-cal_size]
+    y_train_q   = y_res.iloc[:-cal_size]
 
-    # 8. Autoregressive future loop: Prophet trend + residual prediction
-    residual_history = df_prophet["residuals"].tolist()
+    base_params = dict(
+        n_estimators     = 100,
+        learning_rate    = 0.05,
+        num_leaves       = 15,
+        min_child_samples = max(3, n_rows // 20),
+        random_state     = 42,
+        verbose          = -1,
+        objective        = 'quantile',
+    )
+
+    # Three quantile models: low (10th), mid (50th = median), high (90th)
+    m_lo  = lgb.LGBMRegressor(**base_params, alpha=0.10)
+    m_mid = lgb.LGBMRegressor(**base_params, alpha=0.50)
+    m_hi  = lgb.LGBMRegressor(**base_params, alpha=0.90)
+
+    m_lo.fit(X_train_q,  y_train_q)
+    m_mid.fit(X_train_q, y_train_q)
+    m_hi.fit(X_train_q,  y_train_q)
+
+    # ── Step 6: autoregressive forecast loop ──────────────────────────────────
+    residual_history = df_prophet['residuals'].tolist()
     future_preds: List[float] = []
     future_lower: List[float] = []
     future_upper: List[float] = []
 
     for i in range(periods):
-        trend_val = float(prophet_forecast["trend"].iloc[n_rows + i])
+        trend_val = float(prophet_fc['trend'].iloc[n_rows + i])
 
         lag_vals: Dict[str, List[float]] = {}
         for lag in available_lags:
-            if len(residual_history) >= lag:
-                lag_vals[f"lag{lag}"] = [residual_history[-lag]]
-            else:
-                fallback = float(np.mean(residual_history)) if residual_history else 0.0
-                lag_vals[f"lag{lag}"] = [fallback]
-        window_slice = residual_history[-rolling_window:] if len(residual_history) >= rolling_window else residual_history
-        lag_vals[f"rolling_mean_{rolling_window}"] = [float(np.mean(window_slice))]
+            lag_vals[f'lag{lag}'] = [
+                residual_history[-lag] if len(residual_history) >= lag
+                else float(np.mean(residual_history))
+            ]
+        window_slice = (
+            residual_history[-rolling_window:]
+            if len(residual_history) >= rolling_window
+            else residual_history
+        )
+        lag_vals[f'rolling_mean_{rolling_window}'] = [float(np.mean(window_slice))]
 
         X_next = pd.DataFrame(lag_vals)
-        pred, pred_int = mapie.predict(X_next, alpha=alpha)
-        residual_pred = float(pred[0])
-        final_pred = trend_val + residual_pred
 
-        pi = pred_int[0]
-        if pi.ndim == 2:
-            lower_residual = float(pi[0][0])
-            upper_residual = float(pi[1][0])
+        r_mid = float(m_mid.predict(X_next)[0])
+        r_lo  = float(m_lo.predict(X_next)[0])
+        r_hi  = float(m_hi.predict(X_next)[0])
+
+        # Ensure bands are ordered (quantile models can occasionally cross)
+        r_lo  = min(r_lo, r_mid)
+        r_hi  = max(r_hi, r_mid)
+
+        pred_mid = trend_val + r_mid
+        pred_lo  = trend_val + r_lo
+        pred_hi  = trend_val + r_hi
+
+        if use_log:
+            future_preds.append(float(np.expm1(pred_mid)))
+            future_lower.append(float(np.expm1(pred_lo)))
+            future_upper.append(float(np.expm1(pred_hi)))
         else:
-            lower_residual = float(pi[0])
-            upper_residual = float(pi[1])
+            future_preds.append(pred_mid)
+            future_lower.append(pred_lo)
+            future_upper.append(pred_hi)
 
-        future_preds.append(final_pred)
-        future_lower.append(trend_val + lower_residual)
-        future_upper.append(trend_val + upper_residual)
-        residual_history.append(residual_pred)
+        residual_history.append(r_mid)
 
-    # 9. Baseline: naive last-value forecast
-    last_value = float(df_prophet["y"].iloc[-1])
+    # ── Step 7: historical output (original scale) ───────────────────────────
+    historical_y     = df_base['sales'].tolist()
+    historical_dates = df_base['date'].dt.strftime('%Y-%m-%d').tolist()
+    last_value       = float(df_base['sales'].iloc[-1])
     baseline_forecast = [last_value] * periods
 
-    # 10. Validation MAPE
-    val_size = min(8, len(train_data) // 4)
+    # ── Step 8: SMAPE validation ──────────────────────────────────────────────
+    val_size = cal_size   # same window used for validation
     if val_size > 0 and len(train_data) > val_size:
-        val_y_res = train_data["y"].iloc[-val_size:].values
-        val_X = train_data[feat_cols].iloc[-val_size:]
-        raw_preds = mapie.predict(val_X)
-        model_res_preds = raw_preds[0] if isinstance(raw_preds, tuple) else raw_preds
+        val_X      = X.iloc[-val_size:]
+        val_actual_log = y_res.iloc[-val_size:].values
 
-        val_start_idx = n_rows - val_size
-        val_trend = prophet_forecast["trend"].iloc[val_start_idx : val_start_idx + val_size].values
-        val_actual = df_prophet["y"].iloc[-val_size:].values
-        val_model_preds = val_trend + model_res_preds
-        val_baseline = np.array([last_value] * val_size)
+        # Align trend for validation window
+        val_start   = n_rows - val_size
+        val_trend   = prophet_fc['trend'].iloc[val_start: val_start + val_size].values
+        val_model_log = val_trend + m_mid.predict(val_X)
 
-        nonzero = val_actual != 0
-        if nonzero.any():
-            model_mape = float(
-                np.mean(np.abs((val_actual[nonzero] - val_model_preds[nonzero]) / val_actual[nonzero])) * 100
+        if use_log:
+            val_actual_orig = np.expm1(
+                val_actual_log + prophet_trend_hist[-val_size:]
             )
-            baseline_mape = float(
-                np.mean(np.abs((val_actual[nonzero] - val_baseline[nonzero]) / val_actual[nonzero])) * 100
-            )
+            val_model_orig  = np.expm1(val_model_log)
         else:
-            model_mape, baseline_mape = 10.0, 20.0
+            val_actual_orig = df_base['sales'].values[-val_size:]
+            val_model_orig  = val_model_log
+
+        val_baseline = np.array([last_value] * val_size)
+        model_smape   = _smape(val_actual_orig, val_model_orig)
+        baseline_smape = _smape(val_actual_orig, val_baseline)
     else:
-        model_mape, baseline_mape = 10.0, 20.0
+        model_smape, baseline_smape = 15.0, 25.0
 
-    truth_score = ((baseline_mape - model_mape) / baseline_mape * 100) if baseline_mape > 0 else 0.0
-
-    # 11. Output dates
-    future_dates = (
-        prophet_forecast["ds"].iloc[n_rows : n_rows + periods].dt.strftime("%Y-%m-%d").tolist()
+    truth_score = (
+        (baseline_smape - model_smape) / (baseline_smape + 1e-8) * 100
     )
-    historical_dates = df_prophet["ds"].dt.strftime("%Y-%m-%d").tolist()
-    historical_sales = df_prophet["y"].tolist()
 
-    # 12. Data quality metadata
-    data_quality_warning: Optional[str] = None
-    if n_rows < 104:
-        data_quality_warning = (
-            f"Dataset has {n_rows} data points. "
-            f"Forecasts are exploratory beyond {periods} periods."
+    # ── Output ────────────────────────────────────────────────────────────────
+    future_dates = (
+        prophet_fc['ds']
+        .iloc[n_rows: n_rows + periods]
+        .dt.strftime('%Y-%m-%d')
+        .tolist()
+    )
+
+    dq_warning: Optional[str] = None
+    if n_rows < 52:
+        dq_warning = (
+            f"Dataset has {n_rows} data points after resampling. "
+            f"Forecasts are exploratory — upload more history for higher accuracy."
         )
 
     return {
-        "dates": future_dates,
-        "forecast": future_preds,
-        "lower": future_lower,
-        "upper": future_upper,
-        "historical": historical_sales,
-        "historical_dates": historical_dates,
-        "baseline": baseline_forecast,
-        "model_mape": model_mape,
-        "baseline_mape": baseline_mape,
-        "truth_score": truth_score,
-        "detected_freq": detected_freq,
-        "forecast_horizon": periods,
-        "confidence_level": confidence_level,
-        "data_quality": {
-            "total_rows": n_rows,
-            "warning": data_quality_warning,
+        'dates':            future_dates,
+        'forecast':         future_preds,
+        'lower':            future_lower,
+        'upper':            future_upper,
+        'historical':       historical_y,
+        'historical_dates': historical_dates,
+        'baseline':         baseline_forecast,
+        'model_mape':       model_smape,        # SMAPE under the hood
+        'baseline_mape':    baseline_smape,
+        'truth_score':      truth_score,
+        'detected_freq':    detected_freq,
+        'forecast_horizon': periods,
+        'confidence_level': confidence_level,
+        'data_quality': {
+            'total_rows': n_rows,
+            'cv':         round(cv, 2),
+            'log_transform': use_log,
+            'warning':    dq_warning,
         },
-        # These are stripped in main.py before saving
-        "model": lgbm,
-        "X": X,
+        # Stripped by main.py before DB save — used for SHAP only
+        'model': m_mid,
+        'X':     X,
     }

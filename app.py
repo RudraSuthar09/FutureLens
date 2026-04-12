@@ -278,6 +278,12 @@ if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 if "demo_mode" not in st.session_state:
     st.session_state.demo_mode = False
+if "forecast_update" not in st.session_state:
+    st.session_state.forecast_update = None
+if "forecast_notification" not in st.session_state:
+    st.session_state.forecast_notification = None
+ 
+
 
 # --- Helpers ---
 def load_data(file_bytes=None, filename="data.csv"):
@@ -345,10 +351,8 @@ with st.sidebar:
         except FileNotFoundError:
             st.error("Sample data not found. Please run generate_data.py first.")
 
-user_msgs = sum(
-    1 for msg in st.session_state.get("chat_history", [])
-    if msg.get("role") == "user"
-)  # user + assistant pairs
+msg_count = len(st.session_state.get("chat_history", []))
+user_msgs = msg_count // 2  # user + assistant pairs
 st.sidebar.markdown("---")
 st.sidebar.caption(
     f"💬 {user_msgs} questions asked this session."
@@ -391,13 +395,130 @@ if st.session_state.data:
         """,
         unsafe_allow_html=True
     )
+    forecast_query = st.text_input(
+    label        = "🔍 Forecast query",
+    placeholder  = "e.g. 'next 3 weeks', 'West region forecast', 'show me next month'",
+    key          = "forecast_query_input",
+    label_visibility = "collapsed",
+    )
+ 
+    col_fq1, col_fq2 = st.columns([5, 1])
+    with col_fq1:
+        st.caption("Type a forecast question above — the chart below updates automatically.")
+    with col_fq2:
+        run_fq = st.button("Update chart", key="btn_forecast_query")
+    
+    if run_fq and forecast_query.strip() and st.session_state.data:
+        try:
+            resp = requests.post(
+                f"{API_URL}/forecast_query",
+                json={
+                    "message":    forecast_query.strip(),
+                    "session_id": st.session_state.session_id,
+                },
+                timeout=10,
+            )
+            if resp.status_code == 200:
+                fq_data = resp.json()
+                fu = fq_data.get("forecast_update")
+                if fu:
+                    st.session_state.forecast_update       = fu
+                    st.session_state.forecast_notification = fu.get("label", "Forecast updated")
+                else:
+                    st.session_state.forecast_notification = "No forecast update — try a more specific query."
+            else:
+                st.session_state.forecast_notification = "Could not parse query."
+        except Exception as e:
+            st.session_state.forecast_notification = f"Error: {e}"
+        st.rerun()
+    
+    st.markdown("---")
 
     tab1, tab2, tab3, tab4 = st.tabs(["Forecast", "Root Cause", "Scenario", "Chat"])
 
     # === TAB 1: Forecast ===
     with tab1:
+        fu = st.session_state.get("forecast_update")
+        notif = st.session_state.get("forecast_notification")
+        if notif:
+            st.success(f"📊 Forecast chart updated — {notif}")
+            # Clear after showing once
+            st.session_state.forecast_notification = None
+    
         st.subheader("Predictive Forecast Analysis")
-
+        # ── Determine which data to plot ─────────────────────────────────────────
+        # Defaults: use whatever was returned at upload time
+        plot_forecast = forecast       # list from data
+        plot_lower    = lower
+        plot_upper    = upper
+        plot_dates    = future_dates
+        chart_subtitle = None
+    
+        if fu:
+            fu_type = fu.get("type")
+    
+            if fu_type == "horizon":
+                # Slice the forecast to the requested number of periods
+                n_periods = int(fu.get("periods", len(forecast)))
+                plot_forecast = forecast[:n_periods]
+                plot_lower    = lower[:n_periods]
+                plot_upper    = upper[:n_periods]
+                plot_dates    = future_dates[:n_periods]
+                chart_subtitle = f"Showing: {fu.get('label', '')}"
+    
+            elif fu_type == "group":
+                # Find matching group in group_forecasts and highlight it
+                kw = fu.get("keyword", "").lower()
+                chart_subtitle = f"Highlighted group: {fu.get('label', kw.title())}"
+                # The main chart stays the same; we add a callout below for the group
+    
+            elif fu_type == "default":
+                chart_subtitle = fu.get("label", "")
+    
+        if chart_subtitle:
+            st.caption(f"🔎 {chart_subtitle}")
+    
+        # ── Plot (uses plot_forecast / plot_lower / plot_upper / plot_dates) ─────
+        # [keep your existing fig = go.Figure() block here, but replace:
+        #    forecast  → plot_forecast
+        #    lower     → plot_lower
+        #    upper     → plot_upper
+        #    future_dates → plot_dates
+        #  in all the fig.add_trace() calls]
+    
+        # ── Group highlight callout (shown below chart when type=group) ───────────
+        if fu and fu.get("type") == "group" and group_forecasts:
+            kw = fu.get("keyword", "").lower()
+            matched = [
+                g for g in group_forecasts
+                if kw in str(g.get("group", "")).lower()
+            ]
+            if matched:
+                g = matched[0]
+                change = g.get("expected_change_percent", 0)
+                direction = "up" if change >= 0 else "down"
+                color = "green" if change >= 0 else "red"
+                st.markdown(
+                    f"""
+                    <div style="
+                        background-color: #E6F4EA;
+                        border-left: 5px solid #00A859;
+                        padding: 12px 16px;
+                        border-radius: 8px;
+                        margin-top: 12px;
+                    ">
+                    <strong>📍 {g.get('group_col','Group')}: {g.get('group')}</strong><br/>
+                    Current: <strong>{g.get('last_hist', 0):,.0f}</strong> &nbsp;→&nbsp;
+                    Forecast: <strong>{g.get('last_forecast', 0):,.0f}</strong>
+                    &nbsp;(<span style="color:{'green' if change>=0 else 'red'}">
+                    {change:+.1f}%</span> expected change)
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.info(f"No group matching '{kw}' found in this dataset.")
+    
         # Convert dates for plotting
         historical_dates_dt = pd.to_datetime(historical_dates, errors="coerce") if historical_dates else []
         future_dates_dt = pd.to_datetime(future_dates, errors="coerce") if future_dates else []
@@ -740,10 +861,10 @@ if st.session_state.data:
                 pass
             st.rerun()
 
-            # Show all previous messages first
         for msg in st.session_state.chat_history:
             with st.chat_message(msg["role"]):
-                st.markdown(msg["content"])
+                st.write(msg["content"])
+
         user_input = st.chat_input("Ask about the forecast, anomalies, or actions...")
         if user_input:
             st.session_state.chat_history.append({"role": "user", "content": user_input})
@@ -775,6 +896,59 @@ if st.session_state.data:
                         response_data = {}
 
                 st.markdown(bot_reply)
+                chart_ctx = response_data.get("chart_context")
+                if chart_ctx:
+                    ctx_type = chart_ctx.get("type")
+
+                    if ctx_type == "highlight_forecast":
+                        periods = chart_ctx.get("periods", 4)
+                        label = chart_ctx.get("label", "Forecast")
+                        st.markdown(f"**📈 {label} — live forecast view:**")
+
+                        # Show mini forecast chart inline in chat
+                        fc_slice = forecast[:periods]
+                        lo_slice = lower[:periods]
+                        hi_slice = upper[:periods]
+                        dt_slice = future_dates[:periods]
+
+                        if fc_slice and dt_slice:
+                            fig_mini = go.Figure()
+                            fig_mini.add_trace(go.Scatter(
+                                x=pd.to_datetime(dt_slice, errors="coerce"),
+                                y=fc_slice,
+                                name=label,
+                                line=dict(color="#5A287D", width=2),
+                                mode="lines+markers"
+                            ))
+                            fig_mini.add_trace(go.Scatter(
+                                x=pd.to_datetime(dt_slice, errors="coerce"),
+                                y=hi_slice, name="Upper", line=dict(width=0), showlegend=False
+                            ))
+                            fig_mini.add_trace(go.Scatter(
+                                x=pd.to_datetime(dt_slice, errors="coerce"),
+                                y=lo_slice, name="Lower",
+                                fill="tonexty",
+                                fillcolor="rgba(90,40,125,0.15)",
+                                line=dict(width=0), showlegend=False
+                            ))
+                            fig_mini.update_layout(
+                                height=250,
+                                margin=dict(l=10, r=10, t=10, b=10),
+                                plot_bgcolor='rgba(0,0,0,0)',
+                                paper_bgcolor='rgba(0,0,0,0)',
+                                yaxis_title=target_col_name,
+                                showlegend=False,
+                            )
+                            st.plotly_chart(fig_mini, use_container_width=True)
+
+                    elif ctx_type == "highlight_group":
+                        keyword = chart_ctx.get("keyword", "")
+                        if group_forecasts:
+                            matched = [g for g in group_forecasts
+                                    if keyword.lower() in str(g.get("group","")).lower()]
+                            if matched:
+                                st.markdown(f"**📊 Group breakdown — '{keyword}':**")
+                                st.table(matched)
 
                 if rate_limited:
                     st.markdown(
@@ -798,6 +972,5 @@ if st.session_state.data:
                                          use_container_width=True):
                                 st.session_state.pending_question = q
                                 st.rerun()
-                st.rerun()
 else:
     st.markdown('<div class="custom-info-box" style="margin-top: 50px;">Please upload a CSV or click the Demo Mode button in the sidebar to begin.</div>', unsafe_allow_html=True)
