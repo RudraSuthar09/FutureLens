@@ -176,28 +176,27 @@ def get_anomalies(session_id: str) -> List[Dict[str, Any]]:
 def get_chat_history(session_id: str, limit: int = None) -> List[Dict[str, Any]]:
     """Retrieves chat history for a session."""
     try:
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        if limit:
-            cursor.execute(
-                """SELECT user_message, agent_response
-                   FROM chat_history
-                   WHERE session_id = ?
-                   ORDER BY created_at DESC LIMIT ?""",
-                (session_id, limit)
-            )
-            rows = cursor.fetchall()
-            rows.reverse()  # oldest first
-        else:
-            cursor.execute(
-                """SELECT user_message, agent_response
-                   FROM chat_history
-                   WHERE session_id = ?
-                   ORDER BY created_at ASC""",
-                (session_id,)
-            )
-            rows = cursor.fetchall()
-        conn.close()
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            if limit:
+                cursor.execute(
+                    """SELECT user_message, agent_response
+                       FROM chat_history
+                       WHERE session_id = ?
+                       ORDER BY created_at DESC LIMIT ?""",
+                    (session_id, limit)
+                )
+                rows = cursor.fetchall()
+                rows = list(reversed(rows))  # oldest first
+            else:
+                cursor.execute(
+                    """SELECT user_message, agent_response
+                       FROM chat_history
+                       WHERE session_id = ?
+                       ORDER BY created_at ASC""",
+                    (session_id,)
+                )
+                rows = cursor.fetchall()
         return [{"user_message": r[0], "agent_response": r[1]} for r in rows]
     except Exception as e:
         logger.error(f"Error getting chat history: {e}")
@@ -219,33 +218,38 @@ def save_system_prompt(session_id: str,
                        system_prompt: str,
                        intelligence_card: dict) -> None:
     """Save pre-built system prompt and intelligence card for a session. Called once per upload."""
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute(
-        """INSERT OR REPLACE INTO system_prompts
-           (session_id, system_prompt, intelligence_card)
-           VALUES (?, ?, ?)""",
-        (session_id, system_prompt, json.dumps(intelligence_card))
-    )
-    conn.commit()
-    conn.close()
+    try:
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """INSERT OR REPLACE INTO system_prompts
+                   (session_id, system_prompt, intelligence_card)
+                   VALUES (?, ?, ?)""",
+                (session_id, system_prompt, json.dumps(intelligence_card))
+            )
+            conn.commit()
+    except Exception as e:
+        logger.error(f"Error saving system prompt: {e}")
 
 def get_system_prompt(session_id: str) -> dict | None:
     """Load pre-built system prompt from DB. Returns None if session not found."""
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute(
-        """SELECT system_prompt, intelligence_card
-           FROM system_prompts
-           WHERE session_id = ?
-           ORDER BY created_at DESC LIMIT 1""",
-        (session_id,)
-    )
-    row = cursor.fetchone()
-    conn.close()
-    if row:
-        return {
-            "system_prompt": row[0],
-            "intelligence_card": json.loads(row[1])
-        }
-    return None
+    try:
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """SELECT system_prompt, intelligence_card
+                   FROM system_prompts
+                   WHERE session_id = ?
+                   ORDER BY created_at DESC LIMIT 1""",
+                (session_id,)
+            )
+            row = cursor.fetchone()
+        if row:
+            return {
+                "system_prompt": row[0],
+                "intelligence_card": json.loads(row[1])
+            }
+        return None
+    except Exception as e:
+        logger.error(f"Error getting system prompt: {e}")
+        return None
