@@ -6,8 +6,19 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
 
-logging.basicConfig(level=logging.INFO)
+def _pick_model() -> str:
+    # Prefer flash models that support generateContent
+    for m in genai.list_models():
+        if "generateContent" in getattr(m, "supported_generation_methods", []):
+            if "flash" in m.name:
+                return m.name  # use full name: "models/..."
+    # Fallback to first model that supports generateContent
+    for m in genai.list_models():
+        if "generateContent" in getattr(m, "supported_generation_methods", []):
+            return m.name
+    raise RuntimeError("No Gemini models available for generateContent with this API key.")
 
+MODEL_NAME = os.environ.get("GEMINI_MODEL") or _pick_model()
 
 def chat(message: str,
          session_context: list,
@@ -15,7 +26,7 @@ def chat(message: str,
     """Token-efficient Gemini chat.
     Uses pre-built system prompt.
     Max input: ~570 tokens.
-    Max output: 250 tokens."""
+    Max output: 600 tokens (adjustable)."""
 
     # Demo fallback if no API key
     if not GEMINI_API_KEY or GEMINI_API_KEY == "your_gemini_api_key_here":
@@ -23,7 +34,7 @@ def chat(message: str,
 
     try:
         model = genai.GenerativeModel(
-            model_name="gemini-1.5-flash",
+            model_name=MODEL_NAME,
             system_instruction=system_instruction
         )
 
@@ -34,7 +45,6 @@ def chat(message: str,
                 "role": turn["role"],
                 "parts": [turn["content"]]
             })
-        # Add current message
         contents.append({
             "role": "user",
             "parts": [message]
@@ -43,10 +53,10 @@ def chat(message: str,
         response = model.generate_content(
             contents=contents,
             generation_config=genai.types.GenerationConfig(
-                max_output_tokens=250,  # Hard cap — free tier saver
-                temperature=0.2,        # Low = factual and concise
+                max_output_tokens=600,   # 🔼 increase for full answers
+                temperature=0.2,
                 top_p=0.8,
-                top_k=20                # Focused sampling = shorter responses
+                top_k=20
             )
         )
         return response.text
@@ -56,9 +66,8 @@ def chat(message: str,
         return (
             "I had trouble processing that. "
             "Based on the data: "
-            f"{system_instruction.split('FORECAST FOR')[1][:100] if 'FORECAST FOR' in system_instruction else 'please try again.'}"
+            f"{system_instruction.split('FORECAST FOR')[1][:200] if 'FORECAST FOR' in system_instruction else 'please try again.'}"
         )
-
 
 def _demo_fallback(message: str) -> str:
     """Intent-aware fallback when no API key."""
