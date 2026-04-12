@@ -858,7 +858,8 @@ async def chat_endpoint(request: Request):
     response_text = chat(
         message=message,
         session_context=context,
-        system_instruction=system_prompt
+        system_instruction=system_prompt,
+        intelligence_card=card 
     )
 
     # Step 4: Truncate response if too long — 700 chars allows 4 full sentences
