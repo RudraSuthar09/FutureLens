@@ -125,15 +125,16 @@ st.markdown("""
     
     /* CUSTOM SPINNER / LOADER STYLING */
     .stSpinner > div > div {
-        border-top-color: #A20067 !important;
-        border-right-color: #5A287D !important;
-        border-bottom-color: #A20067 !important;
+        border-top-color: #39FF14 !important;
+        border-right-color: #00A859 !important;
+        border-bottom-color: #39FF14 !important;
         border-left-color: transparent !important;
     }
     .stSpinner p {
-        color: #5A287D !important;
-        font-weight: bold !important;
-        font-size: 1.1rem !important;
+        color: #39FF14 !important; /* Neon Green */
+        font-weight: 900 !important;
+        font-size: 1.4rem !important;
+        text-shadow: 1px 1px 3px rgba(0,0,0,0.5) !important;
     }
 
     /* TABS (Navbar / Tabs Interface) */
@@ -154,8 +155,10 @@ st.markdown("""
         font-weight: 600;
     }
     .stTabs [data-baseweb="tab"]:hover {
-        border: 1px solid #A20067;
+        border: 1px solid #00A859;
         background-color: #FFFFFF;
+        box-shadow: 0 4px 6px rgba(0, 168, 89, 0.2);
+        transform: translateY(-2px);
     }
     .stTabs [aria-selected="true"] {
         background-color: #5A287D !important;
@@ -188,6 +191,48 @@ st.markdown("""
     img[src*="natwest_logo.jpg"] {
         width: 290px !important;  /* change this value to resize the logo */
         height: auto !important;
+    }
+
+    /* CUSTOM INFO & SUCCESS BOXES */
+    .sidebar-success {
+        background-color: #00A859 !important;
+        color: #FFFFFF !important;
+        padding: 10px;
+        border-radius: 8px;
+        font-weight: bold;
+        text-align: center;
+        margin-bottom: 10px;
+        border: 1px solid #FFFFFF;
+    }
+    .custom-info-box {
+        background-color: #E6F4EA !important; /* Soft green */
+        border-left: 5px solid #00A859 !important; /* NatWest green accent */
+        padding: 15px !important;
+        border-radius: 8px !important;
+        color: #004D27 !important; /* Dark green text */
+        margin-bottom: 20px !important;
+        font-weight: bold !important;
+        font-size: 1.05rem !important;
+    }
+
+    /* TRUTH METER / PROGRESS BAR */
+    [data-testid="stProgressBar"] > div > div {
+        background-color: #39FF14 !important; /* Neon Green */
+    }
+    
+    /* TABLE STYLING */
+    [data-testid="stTable"] {
+        border-radius: 8px;
+        overflow: hidden;
+    }
+    [data-testid="stTable"] table {
+        border: 2px solid #00A859 !important;
+    }
+    [data-testid="stTable"] th {
+        background-color: #00A859 !important;
+        color: #FFFFFF !important;
+        font-weight: 900 !important;
+        font-size: 1.1rem !important;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -225,7 +270,7 @@ def load_data(file_bytes=None, filename="data.csv"):
             if response.status_code == 200:
                 st.session_state.data = response.json()
                 st.session_state.session_id = st.session_state.data.get("session_id", "demo")
-                st.success("Analysis complete!")
+                st.markdown('<div class="sidebar-success">✅ Analysis complete!</div>', unsafe_allow_html=True)
             else:
                 st.error(f"API Error {response.status_code}: {response.text}")
         except Exception as e:
@@ -289,10 +334,15 @@ if st.session_state.data:
     group_forecasts = data.get("group_forecasts", None)
 
     # Show detected-columns info box right after upload
-    st.info(
-        f"📊 Forecasting **'{target_col_name}'** using **'{date_col_name}'** as the date. "
-        f"Detected frequency: **{detected_freq}**. "
-        f"{len(feature_cols)} additional numeric feature column(s) found."
+    st.markdown(
+        f"""
+        <div class="custom-info-box">
+            📊 Forecasting <strong>'{target_col_name}'</strong> using <strong>'{date_col_name}'</strong> as the date.<br/>
+            Detected frequency: <strong>{detected_freq}</strong>.<br/>
+            {len(feature_cols)} additional numeric feature column(s) found.
+        </div>
+        """,
+        unsafe_allow_html=True
     )
 
     tab1, tab2, tab3, tab4 = st.tabs(["Forecast", "Root Cause", "Scenario", "Chat"])
@@ -415,6 +465,28 @@ if st.session_state.data:
             xaxis_title="Date",
             yaxis_title=target_col_name,
             hovermode="x unified",
+            plot_bgcolor='rgba(0,0,0,0)',
+            paper_bgcolor='rgba(0,0,0,0)',
+            xaxis=dict(
+                showline=True, linewidth=2, linecolor='#00A859',
+                showgrid=True, gridwidth=1, gridcolor='rgba(0, 168, 89, 0.2)',
+                title_font=dict(size=18, color='black', family="Arial, sans-serif"),
+                tickfont=dict(size=15, color='black', family="Arial, sans-serif")
+            ),
+            yaxis=dict(
+                showline=True, linewidth=2, linecolor='#00A859',
+                showgrid=True, gridwidth=1, gridcolor='rgba(0, 168, 89, 0.2)',
+                title_font=dict(size=18, color='black', family="Arial, sans-serif"),
+                tickfont=dict(size=15, color='black', family="Arial, sans-serif")
+            ),
+            shapes=[
+                dict(
+                    type="rect",
+                    xref="paper", yref="paper",
+                    x0=0, y0=0, x1=1, y1=1,
+                    line=dict(color="#00A859", width=3)
+                )
+            ]
         )
         st.plotly_chart(fig, use_container_width=True)
 
@@ -432,13 +504,14 @@ if st.session_state.data:
             ]
             if dq_warning:
                 summary_lines.append(f"⚠️ {dq_warning}")
-            st.info("\n\n".join(summary_lines))
+            summary_html = "<br/><br/>".join(summary_lines)
+            st.markdown(f'<div class="custom-info-box">{summary_html}</div>', unsafe_allow_html=True)
 
         # Group forecast ranking (if available)
         if group_forecasts:
             st.subheader("Group Growth Outlook")
             st.caption("Forecasted expected change by top groups (lightweight group forecast).")
-            st.dataframe(group_forecasts, use_container_width=True)
+            st.table(group_forecasts)
 
         # Dataset overview
         if dataset_profile:
@@ -473,10 +546,33 @@ if st.session_state.data:
                 orientation='h',
                 marker_color='#5A287D'
             ))
-            fig_shap.update_layout(yaxis={'categoryorder':'total ascending'})
+            fig_shap.update_layout(
+                yaxis=dict(
+                    categoryorder='total ascending',
+                    showline=True, linewidth=2, linecolor='#00A859',
+                    title_font=dict(size=18, color='black', family="Arial, sans-serif"),
+                    tickfont=dict(size=15, color='black', family="Arial, sans-serif")
+                ),
+                xaxis=dict(
+                    showline=True, linewidth=2, linecolor='#00A859',
+                    showgrid=True, gridwidth=1, gridcolor='rgba(0, 168, 89, 0.2)',
+                    title_font=dict(size=18, color='black', family="Arial, sans-serif"),
+                    tickfont=dict(size=15, color='black', family="Arial, sans-serif")
+                ),
+                plot_bgcolor='rgba(0,0,0,0)',
+                paper_bgcolor='rgba(0,0,0,0)',
+                shapes=[
+                    dict(
+                        type="rect",
+                        xref="paper", yref="paper",
+                        x0=0, y0=0, x1=1, y1=1,
+                        line=dict(color="#00A859", width=3)
+                    )
+                ]
+            )
             st.plotly_chart(fig_shap, use_container_width=True)
 
-            st.info(data.get("rca_explanation", "No explanation provided."))
+            st.markdown(f'<div class="custom-info-box">{data.get("rca_explanation", "No explanation provided.")}</div>', unsafe_allow_html=True)
         else:
             st.write("No SHAP results available for this dataset.")
 
@@ -551,11 +647,37 @@ if st.session_state.data:
                     name=label,
                 )
             )
-            fig_sc.update_layout(xaxis_title="Date", yaxis_title=target_col_name, hovermode="x unified")
+            fig_sc.update_layout(
+                xaxis_title="Date",
+                yaxis_title=target_col_name,
+                hovermode="x unified",
+                plot_bgcolor='rgba(0,0,0,0)',
+                paper_bgcolor='rgba(0,0,0,0)',
+                xaxis=dict(
+                    showline=True, linewidth=2, linecolor='#00A859',
+                    showgrid=True, gridwidth=1, gridcolor='rgba(0, 168, 89, 0.2)',
+                    title_font=dict(size=18, color='black', family="Arial, sans-serif"),
+                    tickfont=dict(size=15, color='black', family="Arial, sans-serif")
+                ),
+                yaxis=dict(
+                    showline=True, linewidth=2, linecolor='#00A859',
+                    showgrid=True, gridwidth=1, gridcolor='rgba(0, 168, 89, 0.2)',
+                    title_font=dict(size=18, color='black', family="Arial, sans-serif"),
+                    tickfont=dict(size=15, color='black', family="Arial, sans-serif")
+                ),
+                shapes=[
+                    dict(
+                        type="rect",
+                        xref="paper", yref="paper",
+                        x0=0, y0=0, x1=1, y1=1,
+                        line=dict(color="#00A859", width=3)
+                    )
+                ]
+            )
             st.plotly_chart(fig_sc, use_container_width=True)
 
             if summary_text:
-                st.info(f"📊 {summary_text}")
+                st.markdown(f'<div class="custom-info-box">📊 {summary_text}</div>', unsafe_allow_html=True)
 
         if run_growth:
             with st.spinner("Running growth scenario..."):
@@ -602,4 +724,4 @@ if st.session_state.data:
                 st.write(bot_reply)
                 st.session_state.chat_history.append({"role": "model", "content": bot_reply})
 else:
-    st.info("Please upload a CSV or click the Demo Mode button in the sidebar to begin.")
+    st.markdown('<div class="custom-info-box" style="margin-top: 50px;">Please upload a CSV or click the Demo Mode button in the sidebar to begin.</div>', unsafe_allow_html=True)
