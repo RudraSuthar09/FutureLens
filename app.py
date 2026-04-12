@@ -297,15 +297,36 @@ with st.sidebar:
         try:
             with open(sample_path, "rb") as f:
                 load_data(f.read(), "sample_data.csv")
-            st.session_state.chat_history.append({"role": "user", "content": "What happened in week 67?"})
-            st.session_state.chat_history.append(
-                {
-                    "role": "model",
-                    "content": "In Demo Mode, I detected an anomaly at week 67. The primary driver is a drop in ad_spend which contributed heavily to the sales decline.",
-                }
-            )
+            st.session_state.chat_history = [
+                {"role": "user",
+                 "content": "What will sales look like "
+                            "next few weeks?"},
+                {"role": "assistant",
+                 "content": "Next 4 weeks: central estimate "
+                            "+6.2% growth. Lower: -2.1%. "
+                            "Upper: +12.4%. Seasonal spike "
+                            "expected in Week 3. "
+                            "Top driver: ad spend has a "
+                            "positive impact."},
+                {"role": "user",
+                 "content": "Are there any unusual changes?"},
+                {"role": "assistant",
+                 "content": "1 unusual point detected. "
+                            "Sales dropped 28% on Week 67, "
+                            "exceeding the forecast band. "
+                            "Likely driver: reduced ad spend. "
+                            "Suggested action: increase "
+                            "ad spend by 8%."}
+            ]
         except FileNotFoundError:
             st.error("Sample data not found. Please run generate_data.py first.")
+
+msg_count = len(st.session_state.get("chat_history", []))
+user_msgs = msg_count // 2  # user + assistant pairs
+st.sidebar.markdown("---")
+st.sidebar.caption(
+    f"💬 {user_msgs} questions asked this session."
+)
 
 # --- Main App ---
 if st.session_state.data:
@@ -693,6 +714,30 @@ if st.session_state.data:
     with tab4:
         st.subheader("Conversational Insights")
 
+        # Auto-send pending questions (from suggested question buttons)
+        if "pending_question" in st.session_state:
+            auto_q = st.session_state.pop("pending_question")
+            st.session_state.chat_history.append({
+                "role": "user",
+                "content": auto_q
+            })
+            auto_payload = {
+                "message": auto_q,
+                "session_id": st.session_state.get("session_id", "demo")
+            }
+            try:
+                auto_resp = requests.post(
+                    f"{API_URL}/chat",
+                    json=auto_payload
+                ).json()
+                st.session_state.chat_history.append({
+                    "role": "assistant",
+                    "content": auto_resp.get("response", "")
+                })
+            except Exception:
+                pass
+            st.rerun()
+
         for msg in st.session_state.chat_history:
             with st.chat_message(msg["role"]):
                 st.write(msg["content"])
@@ -703,25 +748,42 @@ if st.session_state.data:
             with st.chat_message("user"):
                 st.write(user_input)
 
-            with st.chat_message("model"):
+            with st.chat_message("assistant"):
                 with st.spinner("Thinking..."):
                     try:
+                        payload = {
+                            "message": user_input,
+                            "session_id": st.session_state.get(
+                                "session_id", "demo")
+                        }
                         resp = requests.post(
                             f"{API_URL}/chat",
-                            json={
-                                "message": user_input,
-                                "session_context": st.session_state.chat_history,
-                                "session_id": st.session_state.session_id,
-                            },
+                            json=payload,
                         )
                         if resp.status_code == 200:
-                            bot_reply = resp.json().get("response", "No response.")
+                            response_data = resp.json()
+                            bot_reply = response_data.get("response", "No response.")
                         else:
                             bot_reply = f"API Error {resp.status_code}: {resp.text}"
+                            response_data = {}
                     except Exception as e:
                         bot_reply = f"Error communicating with backend: {e}"
+                        response_data = {}
 
                 st.write(bot_reply)
-                st.session_state.chat_history.append({"role": "model", "content": bot_reply})
+                st.session_state.chat_history.append({"role": "assistant", "content": bot_reply})
+
+                # Display suggested questions as buttons
+                suggested = response_data.get("suggested_questions", [])
+                if suggested:
+                    st.markdown("**💡 Try asking:**")
+                    cols = st.columns(len(suggested))
+                    for i, q in enumerate(suggested):
+                        with cols[i]:
+                            if st.button(q,
+                                         key=f"sq_{i}_{q[:15]}",
+                                         use_container_width=True):
+                                st.session_state.pending_question = q
+                                st.rerun()
 else:
     st.markdown('<div class="custom-info-box" style="margin-top: 50px;">Please upload a CSV or click the Demo Mode button in the sidebar to begin.</div>', unsafe_allow_html=True)

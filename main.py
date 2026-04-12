@@ -6,7 +6,7 @@ import pandas as pd
 import numpy as np
 import logging
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
@@ -16,7 +16,8 @@ load_dotenv()
 
 from api.database import (
     init_db, save_upload, save_forecast, save_anomalies, save_chat,
-    get_forecast, get_anomalies, get_chat_history, get_recent_uploads
+    get_forecast, get_anomalies, get_chat_history, get_recent_uploads,
+    save_system_prompt, get_system_prompt
 )
 from api.forecaster import run_forecast, detect_date_column
 from api.rca import compute_shap, explain_rca
@@ -186,7 +187,214 @@ def pick_group_column(df: pd.DataFrame) -> str | None:
     return None
 
 
-@app.post("/upload")
+def build_dataset_intelligence_card(
+    df_work: pd.DataFrame,
+    forecast_results: dict,
+    anomalies: list,
+    detected_columns: dict,
+    shap_results: list
+) -> dict:
+    """Build a compact, token-efficient intelligence card
+    covering ALL dataset columns. Built once per upload."""
+
+    target = detected_columns["target"]
+    freq_label = forecast_results.get("detected_freq_label", "week")
+    horizon = forecast_results.get("forecast_horizon", 4)
+
+    # Primary forecast column stats
+    hist = forecast_results["historical"]
+    fc = forecast_results["forecast"]
+    lo = forecast_results["lower"]
+    hi = forecast_results["upper"]
+    last_hist = hist[-1] if hist else 0
+
+    change_pct = ((fc[-1] - last_hist) / abs(last_hist) * 100) if last_hist else 0
+    lower_pct = ((sum(lo)/len(lo) - last_hist) / abs(last_hist) * 100) if last_hist else 0
+    upper_pct = ((sum(hi)/len(hi) - last_hist) / abs(last_hist) * 100) if last_hist else 0
+    trend = ("rising" if change_pct > 2
+             else "falling" if change_pct < -2
+             else "stable")
+
+    # Per-period forecast lines (compact)
+    forecast_dates = forecast_results.get("dates", [])
+    period_lines = []
+    for i in range(min(horizon, len(forecast_dates))):
+        period_lines.append(
+            f"Period {i+1} ({forecast_dates[i]}): "
+            f"{fc[i]:.2f} "
+            f"[low {lo[i]:.2f} – high {hi[i]:.2f}]"
+        )
+
+    # One-liner summary
+    one_liner = (
+        f"Next {horizon} {freq_label}s: "
+        f"central estimate {change_pct:+.1f}% "
+        f"({trend}). "
+        f"Lower bound: {lower_pct:+.1f}%. "
+        f"Upper bound: {upper_pct:+.1f}%."
+    )
+
+    # Top driver from SHAP
+    top_driver = "recent trend"
+    top_driver_direction = "neutral"
+    if shap_results:
+        top_driver = shap_results[0].get("feature", "recent trend")
+        top_driver_direction = shap_results[0].get("direction", "neutral")
+
+    # Other columns stats (for any-column questions)
+    other_cols = {}
+    feature_cols = detected_columns.get("features", [])
+    for col in feature_cols:
+        if col not in df_work.columns:
+            continue
+        series = df_work[col].dropna()
+        if len(series) < 4:
+            continue
+        col_last = round(float(series.iloc[-1]), 2)
+        col_prev = round(float(series.iloc[-5]), 2) if len(series) >= 5 else col_last
+        col_chg = ((col_last - col_prev) / abs(col_prev) * 100) if col_prev else 0
+        other_cols[col] = {
+            "last": col_last,
+            "change_pct": round(col_chg, 1),
+            "trend": ("rising" if col_chg > 2 else "falling" if col_chg < -2 else "stable"),
+            "mean": round(float(series.mean()), 2)
+        }
+
+    # Anomaly summary (compact)
+    if anomalies:
+        high = [a for a in anomalies if a.get("severity") == "high"]
+        recent = sorted(anomalies, key=lambda x: x.get("date", ""), reverse=True)[0]
+        anomaly_plain = (
+            f"{len(anomalies)} unusual point(s) detected "
+            f"({len(high)} high severity). "
+            f"Most recent: {recent.get('date', 'unknown')} — "
+            f"a {recent.get('direction', 'change')} of "
+            f"{recent.get('deviation_percent', 0):.0f}% "
+            f"from expected."
+        )
+    else:
+        anomaly_plain = "No unusual patterns detected."
+
+    # Model reliability (plain English)
+    truth_score = forecast_results.get("truth_score", 0)
+    if truth_score > 15:
+        reliability_plain = (
+            f"Model is reliable ({truth_score:.0f}% better than baseline)."
+        )
+    elif truth_score > 0:
+        reliability_plain = (
+            "Model is slightly better than baseline. "
+            "Treat forecast as directional guidance."
+        )
+    else:
+        reliability_plain = (
+            "Model accuracy is close to baseline. "
+            "Use forecast cautiously."
+        )
+
+    return {
+        "target_col": target,
+        "freq_label": freq_label,
+        "horizon": horizon,
+        "one_liner": one_liner,
+        "change_pct": round(change_pct, 1),
+        "lower_pct": round(lower_pct, 1),
+        "upper_pct": round(upper_pct, 1),
+        "trend_direction": trend,
+        "last_historical_value": round(last_hist, 2),
+        "forecast_dates": forecast_dates,
+        "forecast_values": [round(v, 2) for v in fc],
+        "lower_values": [round(v, 2) for v in lo],
+        "upper_values": [round(v, 2) for v in hi],
+        "period_lines": period_lines,
+        "top_driver": top_driver,
+        "top_driver_direction": top_driver_direction,
+        "other_columns": other_cols,
+        "anomaly_plain": anomaly_plain,
+        "anomaly_count": len(anomalies),
+        "reliability_plain": reliability_plain,
+        "truth_score": truth_score
+    }
+
+
+def build_compact_system_prompt(card: dict, detected_columns: dict) -> str:
+    """Build a token-efficient system prompt from the intelligence card.
+    Target: under 450 tokens total. Built ONCE at upload, reused for every chat message."""
+
+    target = card["target_col"]
+    freq = card["freq_label"]
+    horizon = card["horizon"]
+
+    # Build other columns description (dynamic, works for ANY dataset)
+    other_col_lines = []
+    for col, stats in card["other_columns"].items():
+        other_col_lines.append(
+            f"  {col}: current={stats['last']}, "
+            f"trend={stats['trend']} "
+            f"({stats['change_pct']:+.1f}% recent change)"
+        )
+    other_cols_str = "\n".join(other_col_lines) if other_col_lines else "  No additional columns."
+
+    # Build period-by-period forecast (compact)
+    periods_str = "\n".join([f"  {line}" for line in card["period_lines"]])
+
+    prompt = f"""You are FutureLens, a friendly AI forecasting assistant.
+
+DATASET:
+- Forecasting: {target} | Date col: {detected_columns['date']}
+- Frequency: {freq}ly data | Horizon: {horizon} {freq}s ahead
+
+FORECAST FOR {target.upper()}:
+{card['one_liner']}
+By period:
+{periods_str}
+Top driver: {card['top_driver']} ({card['top_driver_direction']} impact)
+
+OTHER COLUMNS IN THIS DATASET:
+{other_cols_str}
+
+ANOMALIES: {card['anomaly_plain']}
+RELIABILITY: {card['reliability_plain']}
+
+ANSWER RULES — FOLLOW EXACTLY:
+
+FORECAST QUESTIONS (next weeks/months/future/predict/trend):
+Start with EXACTLY:
+"Next {horizon} {freq}s: central estimate {card['change_pct']:+.1f}% ({card['trend_direction']}). Lower: {card['lower_pct']:+.1f}%. Upper: {card['upper_pct']:+.1f}%."
+Then 1-2 plain English sentences about the pattern.
+Mention top driver. End with one suggested question.
+
+ANOMALY QUESTIONS (unusual/spike/drop/sudden/alert):
+Start with: "{card['anomaly_plain']}"
+Then explain the cause in plain English.
+Then suggest 1 concrete next step.
+
+SCENARIO QUESTIONS (what if/suppose/if X increases by):
+Extract the % from their question.
+Answer format: "Under a [X%] scenario, {target} is expected to reach [last_value * (1+X/100):.2f] (vs {card['last_historical_value']:.2f} baseline). Range: [value*0.95:.2f]–[value*1.05:.2f]."
+Compute the numbers yourself using the formula above.
+
+OTHER COLUMN QUESTIONS (user asks about a non-target col):
+Use the OTHER COLUMNS data above.
+Say: "While my full forecast is for {target}, here is what I see for [col]: current value [last], trend is [trend]."
+
+UNKNOWN QUESTIONS:
+Never say "I cannot". Instead give the one-liner and suggest 3 questions they can ask.
+
+ALWAYS: plain English only. No MAPE, SHAP, LightGBM, Prophet, or technical terms.
+ALWAYS: keep response under 150 words.
+ALWAYS: end with one follow-up question suggestion.
+"""
+
+    # Token guard: warn if prompt exceeds 500 words
+    word_count = len(prompt.split())
+    if word_count > 500:
+        logger.warning(
+            f"System prompt is {word_count} words. "
+            f"Consider reducing other_columns count."
+        )
+
+    return prompt
 async def upload_file(file: UploadFile = File(...)):
     """
     Accepts CSV, auto-detects columns, runs forecast, RCA, anomalies, and saves to DB.
@@ -372,6 +580,42 @@ async def upload_file(file: UploadFile = File(...)):
         save_forecast(session_id, sanitized_results, sanitized_results.get("truth_score", truth_score))
         save_anomalies(session_id, sanitized_results["anomalies"])
 
+        # Build intelligence card
+        detected_columns = {
+            "date": original_date_col,
+            "target": original_target_col,
+            "features": feature_cols,
+        }
+        intelligence_card = build_dataset_intelligence_card(
+            df_work=df_work,
+            forecast_results=sanitized_results,
+            anomalies=anomalies,
+            detected_columns=detected_columns,
+            shap_results=shap_results
+        )
+
+        # Build system prompt once
+        system_prompt = build_compact_system_prompt(
+            card=intelligence_card,
+            detected_columns=detected_columns
+        )
+
+        # Store both in DB — never recompute
+        save_system_prompt(
+            session_id=session_id,
+            system_prompt=system_prompt,
+            intelligence_card=intelligence_card
+        )
+
+        # Add one_liner and anomaly_plain to response (for UI display only — not for chat)
+        sanitized_results["intelligence_card"] = {
+            "one_liner": intelligence_card["one_liner"],
+            "anomaly_plain": intelligence_card["anomaly_plain"],
+            "reliability_plain": intelligence_card["reliability_plain"],
+            "target_col": intelligence_card["target_col"],
+            "freq_label": intelligence_card["freq_label"]
+        }
+
         return sanitized_results
 
     except HTTPException:
@@ -405,123 +649,72 @@ async def get_anomalies_data(session_id: str):
         raise HTTPException(status_code=500, detail="Internal server error. Check server logs for details.")
 
 @app.post("/chat")
-async def chat_interaction(req: ChatRequest):
-    """Interact with agent using session context."""
-    try:
-        history_from_db = get_chat_history(req.session_id)
-        context = req.session_context or []
+async def chat_endpoint(request: Request):
+    body = await request.json()
+    message = body.get("message", "")
+    session_id = body.get("session_id", "demo")
+    # Note: do NOT accept session_context from frontend
+    # Backend loads history itself — removes ~300 tokens from every single request
 
-        if len(context) == 0 and history_from_db:
-            for row in history_from_db[-5:]:
-                context.append({"role": "user", "content": row["user_message"]})
-                context.append({"role": "model", "content": row["agent_response"]})
+    if not message.strip():
+        return {"response": "Please ask a question.", "suggested_questions": []}
 
-        forecast_data = get_forecast(req.session_id) or {}
-        anomalies_data = get_anomalies(req.session_id) or []
+    # Step 1: Load pre-built system prompt from DB
+    # This was built ONCE at upload — zero recomputation
+    prompt_data = get_system_prompt(session_id)
 
-        dataset_profile = forecast_data.get("dataset_profile", {})
-        group_forecasts = forecast_data.get("group_forecasts", None)
+    if not prompt_data:
+        return {
+            "response": (
+                "Please upload a dataset first "
+                "to enable the chat assistant."
+            ),
+            "suggested_questions": []
+        }
 
-        # --- Build rich, accurate system prompt ---
-        historical = forecast_data.get("historical", [])
-        hist_dates = forecast_data.get("historical_dates", [])
-        future_dates = forecast_data.get("dates", [])
-        truth_score = forecast_data.get("truth_score", 0.0)
-        truth_meter = forecast_data.get("truth_meter", {})
-        rca = forecast_data.get("rca_explanation", "Not available.")
-        detected_freq = forecast_data.get("detected_freq", "unknown")
-        forecast_horizon = forecast_data.get("forecast_horizon", len(future_dates))
-        confidence_level = forecast_data.get("confidence_level", 90)
-        data_quality = forecast_data.get("data_quality", {})
-        detected_cols = forecast_data.get("detected_columns", {})
-        target_col = detected_cols.get("target", "the target metric")
-        total_rows = data_quality.get("total_rows", len(historical))
-        dq_warning = data_quality.get("warning", "")
+    system_prompt = prompt_data["system_prompt"]
+    card = prompt_data["intelligence_card"]
 
-        # Actual date boundaries
-        start_date = hist_dates[0] if hist_dates else "unknown"
-        end_date = hist_dates[-1] if hist_dates else "unknown"
-        forecast_start = future_dates[0] if future_dates else "unknown"
-        forecast_end = future_dates[-1] if future_dates else "unknown"
+    # Step 2: Load only last 2 turns from DB
+    # Truncate each to 200 chars — enough for context without wasting tokens
+    history = get_chat_history(session_id, limit=2)
+    context = []
+    for turn in history:
+        context.append({"role": "user", "content": turn["user_message"][:150]})
+        context.append({"role": "assistant", "content": turn["agent_response"][:200]})
 
-        # Most severe anomaly
-        most_severe = None
-        if anomalies_data:
-            most_severe = max(anomalies_data, key=lambda a: a.get("deviation_percent", 0))
+    # Step 3: Call Gemini with token-efficient settings
+    response_text = chat(
+        message=message,
+        session_context=context,
+        system_instruction=system_prompt
+    )
 
-        if anomalies_data:
-            anom_lines = []
-            for a in anomalies_data[:10]:
-                anom_lines.append(
-                    f"  {a.get('date','?')}: actual={a.get('actual',0):.2f}, "
-                    f"expected={a.get('expected',0):.2f}, "
-                    f"{a.get('severity','?')} severity {a.get('direction','?')}"
-                )
-            anomaly_summary = f"{len(anomalies_data)} anomaly/anomalies detected:\n" + "\n".join(anom_lines)
-            if most_severe:
-                anomaly_summary += (
-                    f"\nMost severe: {most_severe.get('date')} "
-                    f"({most_severe.get('deviation_percent',0):.1f}% deviation, "
-                    f"{most_severe.get('direction','?')})"
-                )
-        else:
-            anomaly_summary = "No anomalies detected."
+    # Step 4: Truncate response if too long
+    # 400 chars is enough for any good answer
+    if len(response_text) > 500:
+        cut = response_text.find("\n\n", 300)
+        if cut > 0:
+            response_text = response_text[:cut]
 
-        warning_line = f"\n⚠️ Data quality note: {dq_warning}" if dq_warning else ""
+    # Step 5: Build dynamic suggested questions from intelligence card (no hardcoding)
+    target = card.get("target_col", "your metric")
+    freq = card.get("freq_label", "week")
+    other_cols = list(card.get("other_columns", {}).keys())
+    suggested = [
+        f"What will {target} look like next {freq}?",
+        "Are there any sudden changes I should look at?",
+        f"What if {target} increases by 10%?"
+    ]
+    # Replace 3rd suggestion with other column question if available
+    if other_cols:
+        suggested[2] = f"Tell me about the trend in {other_cols[0]}."
 
-        # Keep prompt lightweight: include only small summaries
-        cols_list = dataset_profile.get("columns", [])
-        cat_summary = dataset_profile.get("categorical_summary", {})
-        num_summary = dataset_profile.get("numeric_summary", {})
+    # Step 6: Save truncated response to DB
+    # 250 char limit keeps history lean for future turns
+    save_chat(session_id, message, response_text[:250])
 
-        group_hint = ""
-        if group_forecasts:
-            group_col = group_forecasts[0].get("group_col", "group")
-            top_lines = []
-            for gf in group_forecasts[:5]:
-                top_lines.append(f"- {gf.get('group')}: {gf.get('expected_change_percent')}% expected change")
-            group_hint = (
-                f"\nGroup forecast available by `{group_col}` (top growth):\n" + "\n".join(top_lines)
-            )
-
-        system_msg = f"""You are FutureLens, an AI forecasting assistant.
-
-You must:
-- Handle typos and minor misspellings.
-- Answer concisely for non-experts (2���6 bullets).
-- Be transparent about uncertainty and limitations.
-
-Dataset context:
-- Columns available: {cols_list}
-- Historical data: {start_date} to {end_date}
-- Data frequency: {detected_freq}
-- Total rows: {total_rows}
-- Forecasting: {target_col} column
-
-Forecast generated:
-- Forecast period: {forecast_start} to {forecast_end}
-- Horizon: {forecast_horizon} {detected_freq} periods ahead
-- Confidence level: {confidence_level}%
-- Truth meter: {truth_meter.get("message", f"{truth_score:.1f}% vs baseline")}
-- Root Cause Analysis: {rca}
-{warning_line}
-
-Categorical columns (top values): {list(cat_summary.keys())}
-Numeric columns: {list(num_summary.keys())}
-{group_hint}
-
-{anomaly_summary}
-
-If user asks "which region/category will expand", use group forecast if present.
-If no group forecast is available, explain that grouping requires a categorical column and suggest which columns could be used.
-"""
-
-        response = chat(req.message, context, system_instruction=system_msg)
-        save_chat(req.session_id, req.message, response)
-        return {"response": response}
-    except Exception as e:
-        logger.error(f"Error in chat endpoint: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Internal server error. Check server logs for details.")
+    return {"response": response_text, "suggested_questions": suggested}
 
 @app.post("/simulate")
 async def simulate(req: SimulateRequest):

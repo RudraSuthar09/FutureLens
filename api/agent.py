@@ -1,192 +1,105 @@
 import os
-import yaml
-import json
-import re
+import logging
 import google.generativeai as genai
-from typing import List, Dict, Any
 
-# Load API key
-api_key = os.environ.get("GEMINI_API_KEY")
-if api_key:
-    genai.configure(api_key=api_key)
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
 
-def explain_anomaly(anomaly_date: str, anomaly_value: float, expected_value: float, top_features: str) -> str:
-    """
-    Returns simple English explanation for an anomaly.
-    """
-    return f"On {anomaly_date}, there was an anomaly. The value was {anomaly_value} but the expected value was {expected_value}. The top driving features were: {top_features}."
+logging.basicConfig(level=logging.INFO)
 
-def recommend_action(anomaly_type: str, top_feature: str) -> str:
-    """
-    Loads rules.yaml, matches rule, returns action + impact.
-    """
-    try:
-        with open('config/rules.yaml', 'r') as file:
-            rules = yaml.safe_load(file).get('rules', [])
 
-        for rule in rules:
-            if rule['anomaly_type'] == anomaly_type and rule['top_feature'] == top_feature:
-                return f"Action: {rule['action']} Impact: {rule['impact']}"
+def chat(message: str,
+         session_context: list,
+         system_instruction: str) -> str:
+    """Token-efficient Gemini chat.
+    Uses pre-built system prompt.
+    Max input: ~570 tokens.
+    Max output: 250 tokens."""
 
-        return "No specific rule found. Consider general review of the specified feature."
-    except Exception as e:
-        return f"Error loading recommendations: {e}"
-
-def simulate_scenario(base_forecast: str, change_percent: float) -> str:
-    """
-    Adjusts forecast by change_percent, returns comparison.
-    Since base_forecast is a stringified list in the prompt to avoid complicated types,
-    we'll do a simple string parsing or just return a text response.
-    """
-    try:
-        forecast_list = json.loads(base_forecast)
-        adjusted = [val * (1 + (change_percent / 100.0)) for val in forecast_list]
-        return f"Original Forecast: {forecast_list}. Adjusted Forecast: {adjusted}."
-    except Exception:
-        return f"Forecast adjusted by {change_percent}% uniformly."
-
-def generate_report(forecast_summary: str, anomalies: str, truth_score: float) -> str:
-    """
-    Returns full text summary of analysis.
-    """
-    return f"Report Summary:\nForecast: {forecast_summary}\nAnomalies: {anomalies}\nModel Truth Score: {truth_score:.1f}%."
-
-# Tools dictionary for easy reference if needed
-tools = [explain_anomaly, recommend_action, simulate_scenario, generate_report]
-
-_DEFAULT_SYSTEM = """You are FutureLens, an AI forecasting co-pilot.
-
-Behavior rules (important):
-- Be concise and non-technical. Prefer 3–7 bullet points.
-- Handle typos and minor misspellings automatically.
-- Be transparent: use the forecast window and uncertainty band; do not overclaim.
-- If asked "which X will expand/grow", interpret as "which group has the highest expected growth"
-  using any provided group forecast summary. If not available, explain what grouping column is needed.
-- If the user asks about columns that exist in the dataset profile, answer using that profile.
-- If you don't have enough information, ask ONE clarifying question, not multiple.
-
-Answer style:
-- Start with the direct answer.
-- Then give short evidence (dates, % change, top anomalies).
-- End with 1–2 suggested next steps if relevant.
-"""
-
-def _looks_like_cannot_answer(text: str) -> bool:
-    if not text:
-        return False
-    t = text.lower()
-    triggers = [
-        "i cannot answer",
-        "i can't answer",
-        "no information",
-        "not enough information",
-        "not provided dataset",
-        "there is no information",
-        "i don't have",
-        "cannot determine",
-    ]
-    return any(x in t for x in triggers)
-
-def _extract_group_forecasts_from_system(system_instruction: str) -> list[dict]:
-    """
-    Best-effort extraction: if main.py includes group forecast summary in the system prompt,
-    we can parse it or at least detect the top lines.
-    This is a lightweight hackathon fallback, not perfect parsing.
-    """
-    if not system_instruction:
-        return []
-
-    # If your main.py system prompt contains a JSON-ish blob, try to find it.
-    # Otherwise, return empty.
-    # (We keep this conservative to avoid hallucinating.)
-    return []
-
-def _fallback_answer_from_prompt(message: str, system_instruction: str) -> str | None:
-    """
-    If Gemini says 'cannot answer', we try to provide a helpful response based on
-    group forecast hints already embedded in system_instruction.
-    """
-    if not system_instruction:
-        return None
-
-    msg = (message or "").lower()
-
-    # Heuristic: region/category expansion questions
-    if any(k in msg for k in ["region", "category", "segment", "product"]) and any(k in msg for k in ["expand", "grow", "increase", "highest", "top"]):
-        # Try to find the "Group forecast available by" block that main.py adds
-        m = re.search(r"Group forecast available by `([^`]+)`.*?:\n(.+)", system_instruction, flags=re.DOTALL)
-        if m:
-            group_col = m.group(1)
-            lines_block = m.group(2).strip()
-            top_lines = []
-            for line in lines_block.splitlines():
-                line = line.strip()
-                if line.startswith("- "):
-                    top_lines.append(line)
-                if len(top_lines) >= 5:
-                    break
-            if top_lines:
-                return (
-                    f"Based on the group forecast by **{group_col}**, the top expected growth is:\n"
-                    + "\n".join(top_lines)
-                    + "\n\nIf you want, tell me which specific time window you care about (next few weeks vs next 1–2 months)."
-                )
-
-        return (
-            "I can answer that once we pick a grouping column (for example: Region, Category, Segment, Product). "
-            "Your current forecast is for a single target metric over time. "
-            "If you tell me the column name to group by, I can rank which group is expected to grow the most."
-        )
-
-    return None
-
-def chat(message: str, session_context: List[Dict[str, str]] = None, system_instruction: str = None) -> str:
-    """
-    Sends message to Gemini with tool definitions and session context.
-    Handles tool calls and returns final text response.
-    Includes hardcoded fallback if API fails (for Demo Mode).
-    """
-    if "Demo Mode" in (message or "") or "week 67" in (message or ""):
-        return "In Demo Mode, I detected an anomaly at week 67. The primary driver is a drop in ad_spend which contributed heavily to the sales decline. I recommend reviewing the localized drop in ad_spend to avoid further revenue loss."
-
-    if not api_key or api_key == "your_gemini_api_key_here":
-        return "I am currently running in Demo fallback mode. A drop in ad_spend is the root cause for the anomaly!"
-
-    # Always ensure we have a strong system instruction
-    final_system = system_instruction.strip() if system_instruction else ""
-    if final_system:
-        final_system = _DEFAULT_SYSTEM + "\n\n" + final_system
-    else:
-        final_system = _DEFAULT_SYSTEM
+    # Demo fallback if no API key
+    if not GEMINI_API_KEY or GEMINI_API_KEY == "your_gemini_api_key_here":
+        return _demo_fallback(message)
 
     try:
-        # Initialize Gemini model with tools
         model = genai.GenerativeModel(
-            model_name="gemini-2.5-flash",
-            tools=tools,
-            system_instruction=final_system,
+            model_name="gemini-1.5-flash",
+            system_instruction=system_instruction
         )
 
-        # Construct history from session_context
-        history = []
-        if session_context:
-            for msg in session_context:
-                role = "user" if msg.get("role") == "user" else "model"
-                history.append({"role": role, "parts": [msg.get("content", "")]})
+        # Build message history (already truncated by /chat endpoint before passing here)
+        contents = []
+        for turn in session_context:
+            contents.append({
+                "role": turn["role"],
+                "parts": [turn["content"]]
+            })
+        # Add current message
+        contents.append({
+            "role": "user",
+            "parts": [message]
+        })
 
-        chat_session = model.start_chat(history=history, enable_automatic_function_calling=True)
-        response = chat_session.send_message(message)
-        text = response.text or ""
-
-        # If Gemini refuses due to missing context, try a deterministic fallback
-        if _looks_like_cannot_answer(text):
-            fallback = _fallback_answer_from_prompt(message, final_system)
-            if fallback:
-                return fallback
-
-        return text
+        response = model.generate_content(
+            contents=contents,
+            generation_config=genai.types.GenerationConfig(
+                max_output_tokens=250,  # Hard cap — free tier saver
+                temperature=0.2,        # Low = factual and concise
+                top_p=0.8,
+                top_k=20                # Focused sampling = shorter responses
+            )
+        )
+        return response.text
 
     except Exception as e:
-        import logging as _logging
-        _logging.getLogger(__name__).error(f"Gemini API Error: {e}")
-        return "I was unable to reach the AI model at this moment. Please try again in a few seconds."
+        logging.error(f"Gemini error: {e}")
+        return (
+            "I had trouble processing that. "
+            "Based on the data: "
+            f"{system_instruction.split('FORECAST FOR')[1][:100] if 'FORECAST FOR' in system_instruction else 'please try again.'}"
+        )
+
+
+def _demo_fallback(message: str) -> str:
+    """Intent-aware fallback when no API key."""
+    msg = message.lower()
+    if any(k in msg for k in
+           ["next", "future", "predict",
+            "forecast", "weeks", "look like"]):
+        return (
+            "Next 4 weeks: central estimate +6.2% "
+            "growth. Lower bound: -2.1%. "
+            "Upper bound: +12.4%. "
+            "Seasonal pattern expected in Week 3. "
+            "Top driver: recent trend has a positive "
+            "impact. Try asking: "
+            "'Are there any sudden changes?'"
+        )
+    elif any(k in msg for k in
+             ["unusual", "spike", "drop",
+              "anomaly", "sudden", "alert"]):
+        return (
+            "1 unusual point detected (high severity). "
+            "Most recent: a 28% drop from expected. "
+            "Likely driver: reduced momentum in "
+            "recent periods. "
+            "Suggested action: investigate the "
+            "most recent data point more closely."
+        )
+    elif any(k in msg for k in
+             ["what if", "scenario", "increase",
+              "decrease", "suppose"]):
+        return (
+            "Under a +10% scenario, the metric is "
+            "expected to reach approximately 11,000 "
+            "(vs 10,000 baseline). "
+            "Range: 10,450–11,550."
+        )
+    else:
+        return (
+            "Based on the demo data: next 4 weeks "
+            "show +6.2% growth trend with 1 anomaly "
+            "detected. Try asking: "
+            "'What will sales look like next week?' "
+            "or 'Are there any sudden changes?'"
+        )

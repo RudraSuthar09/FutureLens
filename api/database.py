@@ -66,6 +66,17 @@ def init_db() -> None:
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
+
+            # Table: system_prompts
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS system_prompts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT UNIQUE,
+                    system_prompt TEXT,
+                    intelligence_card TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
             conn.commit()
             logger.info("Database initialized successfully.")
     except Exception as e:
@@ -128,7 +139,7 @@ def save_chat(session_id: str, message: str, response: str) -> bool:
             cursor = conn.cursor()
             cursor.execute(
                 'INSERT INTO chat_history (session_id, user_message, agent_response) VALUES (?, ?, ?)',
-                (session_id, message, response)
+                (session_id, message, response[:250])
             )
             conn.commit()
         return True
@@ -162,14 +173,32 @@ def get_anomalies(session_id: str) -> List[Dict[str, Any]]:
         logger.error(f"Error getting anomalies: {e}")
         return []
 
-def get_chat_history(session_id: str) -> List[Dict[str, Any]]:
+def get_chat_history(session_id: str, limit: int = None) -> List[Dict[str, Any]]:
     """Retrieves chat history for a session."""
     try:
-        with get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('SELECT user_message, agent_response, created_at FROM chat_history WHERE session_id = ? ORDER BY id ASC', (session_id,))
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        if limit:
+            cursor.execute(
+                """SELECT user_message, agent_response
+                   FROM chat_history
+                   WHERE session_id = ?
+                   ORDER BY created_at DESC LIMIT ?""",
+                (session_id, limit)
+            )
             rows = cursor.fetchall()
-            return [dict(row) for row in rows]
+            rows.reverse()  # oldest first
+        else:
+            cursor.execute(
+                """SELECT user_message, agent_response
+                   FROM chat_history
+                   WHERE session_id = ?
+                   ORDER BY created_at ASC""",
+                (session_id,)
+            )
+            rows = cursor.fetchall()
+        conn.close()
+        return [{"user_message": r[0], "agent_response": r[1]} for r in rows]
     except Exception as e:
         logger.error(f"Error getting chat history: {e}")
         return []
@@ -185,3 +214,38 @@ def get_recent_uploads(limit: int = 10) -> List[Dict[str, Any]]:
     except Exception as e:
         logger.error(f"Error getting recent uploads: {e}")
         return []
+
+def save_system_prompt(session_id: str,
+                       system_prompt: str,
+                       intelligence_card: dict) -> None:
+    """Save pre-built system prompt and intelligence card for a session. Called once per upload."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute(
+        """INSERT OR REPLACE INTO system_prompts
+           (session_id, system_prompt, intelligence_card)
+           VALUES (?, ?, ?)""",
+        (session_id, system_prompt, json.dumps(intelligence_card))
+    )
+    conn.commit()
+    conn.close()
+
+def get_system_prompt(session_id: str) -> dict | None:
+    """Load pre-built system prompt from DB. Returns None if session not found."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute(
+        """SELECT system_prompt, intelligence_card
+           FROM system_prompts
+           WHERE session_id = ?
+           ORDER BY created_at DESC LIMIT 1""",
+        (session_id,)
+    )
+    row = cursor.fetchone()
+    conn.close()
+    if row:
+        return {
+            "system_prompt": row[0],
+            "intelligence_card": json.loads(row[1])
+        }
+    return None
