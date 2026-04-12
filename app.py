@@ -14,6 +14,8 @@ st.set_page_config(page_title="FutureLens AI - Powered by NatWest", layout="wide
 load_dotenv()  # Load from .env file
 
 API_URL = os.getenv("API_URL", "http://localhost:8000")
+print(f"Using API_URL: {API_URL}")  # Debug line
+
 
 st.markdown("""
 <style>
