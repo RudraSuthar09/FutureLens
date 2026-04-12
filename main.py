@@ -480,8 +480,9 @@ def build_compact_system_prompt(card: dict, detected_columns: dict) -> str:
 
     # Build cross-column scenario formula hint
     if corr_lines:
+        example_col = next(iter(rel.get("correlations_with_target", {})), "X")
         cross_col_formula = (
-            f"For cross-column scenarios (e.g. 'if {list(rel.get('correlations_with_target', {{}}).keys())[0] if rel.get('correlations_with_target') else 'X'} increases by N%'): "
+            f"For cross-column scenarios (e.g. 'if {example_col} increases by N%'): "
             f"use estimated_{target}_change = correlation(column, {target}) × N%. "
             f"Always add: 'Note: correlation is not causation — this is a statistical estimate.'"
         )
@@ -557,8 +558,9 @@ Never refuse when data is available above. Never use general business knowledge 
     word_count = len(prompt.split())
     if word_count > 700:
         logger.warning(
-            f"System prompt is {word_count} words. "
-            f"Consider reducing other_columns count."
+            f"System prompt is {word_count} words (target: ≤700). "
+            f"Reduce other_columns count (currently {len(card['other_columns'])}) "
+            f"to stay within token budget."
         )
 
     return prompt
