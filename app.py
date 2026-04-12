@@ -750,6 +750,7 @@ if st.session_state.data:
 
             with st.chat_message("assistant"):
                 with st.spinner("Thinking..."):
+                    rate_limited = False
                     try:
                         payload = {
                             "message": user_input,
@@ -763,6 +764,7 @@ if st.session_state.data:
                         if resp.status_code == 200:
                             response_data = resp.json()
                             bot_reply = response_data.get("response", "No response.")
+                            rate_limited = response_data.get("rate_limited", False)
                         else:
                             bot_reply = f"API Error {resp.status_code}: {resp.text}"
                             response_data = {}
@@ -770,7 +772,16 @@ if st.session_state.data:
                         bot_reply = f"Error communicating with backend: {e}"
                         response_data = {}
 
-                st.write(bot_reply)
+                st.markdown(bot_reply)
+
+                if rate_limited:
+                    st.markdown(
+                        '<p style="color:#e53e3e; font-size:0.82rem; margin-top:4px;">'
+                        '⚠️ AI response limit reached. If answer seems incomplete, wait ~60 seconds and ask again.'
+                        '</p>',
+                        unsafe_allow_html=True
+                    )
+
                 st.session_state.chat_history.append({"role": "assistant", "content": bot_reply})
 
                 # Display suggested questions as buttons

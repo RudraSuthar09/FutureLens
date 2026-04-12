@@ -819,76 +819,129 @@ async def get_anomalies_data(session_id: str):
         logger.error(f"Error fetching anomalies: {e}")
         raise HTTPException(status_code=500, detail="Internal server error. Check server logs for details.")
 
+
 @app.post("/chat")
 async def chat_endpoint(request: Request):
+    from api.planner import plan
+    from api.tools import execute_tool
+    from api.agent import explain
+
     body = await request.json()
     message = body.get("message", "")
     session_id = body.get("session_id", "demo")
-    # Note: do NOT accept session_context from frontend
-    # Backend loads history itself — removes ~300 tokens from every single request
 
     if not message.strip():
         return {"response": "Please ask a question.", "suggested_questions": []}
 
-    # Step 1: Load pre-built system prompt from DB
-    # This was built ONCE at upload — zero recomputation
     prompt_data = get_system_prompt(session_id)
-
     if not prompt_data:
         return {
-            "response": (
-                "Please upload a dataset first "
-                "to enable the chat assistant."
-            ),
+            "response": "Please upload a dataset first to enable the chat assistant.",
             "suggested_questions": []
         }
 
-    system_prompt = prompt_data["system_prompt"]
     card = prompt_data["intelligence_card"]
+    forecast_data = get_forecast(session_id) or {}
+    anomalies_data = get_anomalies(session_id) or []
+    group_forecasts = forecast_data.get("group_forecasts") or []
 
-    # Step 2: Load only last 2 turns from DB
-    # Truncate each to 200 chars — enough for context without wasting tokens
-    history = get_chat_history(session_id, limit=2)
-    context = []
-    for turn in history:
-        context.append({"role": "user", "content": turn["user_message"][:150]})
-        context.append({"role": "assistant", "content": turn["agent_response"][:200]})
+    # ── STEP 1: Groq plans the tool ──
+    tool_call = plan(message, card)
+    logger.info(f"Tool call planned: {tool_call}")
 
-    # Step 3: Call Gemini with token-efficient settings
-    response_text = chat(
-        message=message,
-        session_context=context,
-        system_instruction=system_prompt,
-        intelligence_card=card 
+    # ── STEP 2: Python executes the tool ──
+    tool_result = execute_tool(
+        tool_call=tool_call,
+        card=card,
+        forecast_data=forecast_data,
+        anomalies_data=anomalies_data,
+        group_forecasts=group_forecasts,
     )
+    logger.info(f"Tool result: {tool_result.get('tool')} — keys: {list(tool_result.keys())}")
 
-    # Step 4: Truncate response if too long — 700 chars allows 4 full sentences
+    # ── STEP 3: Gemini explains ──
+    rate_limited = False
+    try:
+        response_text = explain(
+            user_message=message,
+            tool_result=tool_result,
+            card=card,
+        )
+        # Detect if Gemini silently rate-limited and fell back
+        if "rate" in response_text.lower() and "limit" in response_text.lower():
+            rate_limited = True
+    except Exception as e:
+        err_str = str(e).lower()
+        if "429" in str(e) or "quota" in err_str or "rate" in err_str:
+            rate_limited = True
+            response_text = explain.__wrapped__(message, tool_result, card) \
+                if hasattr(explain, '__wrapped__') else \
+                _build_rate_limit_fallback(tool_result, card)
+        else:
+            logger.error(f"Explain error: {e}")
+            response_text = "I encountered an error processing your question. Please try again."
+
     if len(response_text) > 700:
-        cut = response_text.find("\n\n", 500)
-        if cut > 0:
-            response_text = response_text[:cut]
+        cut = response_text.find("\n\n", 400)
+        response_text = response_text[:cut] if cut > 0 else response_text[:700]
 
-    # Step 5: Build dynamic suggested questions from intelligence card (no hardcoding)
     target = card.get("target_col", "your metric")
     freq = card.get("freq_label", "week")
-    other_cols = list(card.get("other_columns", {}).keys())
-    corr_cols = list(card.get("column_relationships", {}).get("correlations_with_target", {}).keys())
+    corr_cols = list(card.get("column_relationships", {})
+                     .get("correlations_with_target", {}).keys())
     suggested = [
         f"What will {target} look like next {freq}?",
         "Are there any sudden changes I should look at?",
-        f"What if {target} increases by 10%?"
+        f"If {corr_cols[0]} increases by 10%, how does that affect {target}?"
+        if corr_cols else f"What if {target} increases by 10%?"
     ]
-    # Replace 3rd suggestion with cross-column question if a correlated column exists
-    if corr_cols:
-        suggested[2] = f"If {corr_cols[0]} increases by 10%, how does that affect {target}?"
-    elif other_cols:
-        suggested[2] = f"Tell me about the trend in {other_cols[0]}."
 
-    # Step 6: Save truncated response to DB
-    # 250 char limit keeps history lean for future turns
     save_chat(session_id, message, response_text[:250])
 
-    return {"response": response_text, "suggested_questions": suggested}
+    return {
+        "response": response_text,
+        "suggested_questions": suggested,
+        "rate_limited": rate_limited,   # ← frontend uses this for the red warning
+        "debug_tool": tool_call.get("tool"),
+    }
+
+
+def _build_rate_limit_fallback(tool_result: dict, card: dict) -> str:
+    """Template answer used when Gemini is rate-limited — uses real tool result numbers."""
+    tool = tool_result.get("tool", "none")
+    target = card.get("target_col", "metric")
+    freq = card.get("freq_label", "period")
+
+    if tool == "forecast":
+        periods = tool_result.get("period_data", [])
+        chg = tool_result.get("overall_change_pct", 0)
+        if periods:
+            p = periods[0]
+            return (f"{target} forecast: {p['forecast']:.2f} next {freq} "
+                    f"(range {p['lower']:.2f}–{p['upper']:.2f}). "
+                    f"Overall change: {chg:+.1f}%.")
+    if tool == "categorical_analysis":
+        groups = tool_result.get("ranked_groups", [])
+        if groups:
+            top = groups[0]
+            return (f"Top {tool_result.get('group_column','segment')} by {tool_result.get('rank_by','volume')}: "
+                    f"{top['group']} (forecast: {top['forecast_value']:.2f}, "
+                    f"growth: {top['expected_change_pct']:+.1f}%).")
+    if tool == "profitability":
+        gp = tool_result.get("group_profit_ranking", [])
+        if gp:
+            top = gp[0]
+            return (f"Most profitable {top['group_col']}: {top['group']} "
+                    f"(current: {top['current']:.2f}, forecast: {top['forecast']:.2f}, "
+                    f"growth: {top['growth_pct']:+.1f}%).")
+    if tool == "scenario":
+        return (f"Scenario result: {tool_result.get('difference_percent', 0):+.1f}% difference. "
+                f"Scenario total: {tool_result.get('scenario_total', 0):.2f} "
+                f"vs baseline {tool_result.get('baseline_total', 0):.2f}.")
+
+    return card.get("one_liner", "Data loaded. Please try your question again in a moment.")
+
+
 
 @app.post("/simulate")
 async def simulate(req: SimulateRequest):
