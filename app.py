@@ -131,10 +131,10 @@ st.markdown("""
         border-left-color: transparent !important;
     }
     .stSpinner p {
-        color: #39FF14 !important; /* Neon Green */
-        font-weight: 900 !important;
-        font-size: 1.4rem !important;
-        text-shadow: 1px 1px 3px rgba(0,0,0,0.5) !important;
+        color: #00A859 !important; /* NatWest Green */
+        font-weight: 500 !important;
+        font-size: 1.1rem !important;
+        text-shadow: none !important;
     }
 
     /* TABS (Navbar / Tabs Interface) */
@@ -233,6 +233,30 @@ st.markdown("""
         color: #FFFFFF !important;
         font-weight: 900 !important;
         font-size: 1.1rem !important;
+    }
+    }
+
+    /* GRAPH CONTAINER (UI Card) */
+    [data-testid="stPlotlyChart"], .stPlotlyChart {
+        border: 2px solid #EBE2F0 !important;
+        border-radius: 10px !important;
+        padding: 5px !important;
+        background-color: #FFFFFF !important;
+        box-shadow: 0px 4px 10px rgba(0, 0, 0, 0.05) !important;
+    }
+
+    /* CHAT SPINNER (Subtle) */
+    [data-testid="stChatMessage"] .stSpinner > div > div {
+        border-top-color: #5A287D !important;
+        border-right-color: #EBE2F0 !important;
+        border-bottom-color: #5A287D !important;
+        border-left-color: transparent !important;
+    }
+    [data-testid="stChatMessage"] .stSpinner p {
+        color: #5A287D !important; 
+        font-weight: 500 !important;
+        font-size: 1.1rem !important;
+        text-shadow: none !important;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -489,25 +513,17 @@ if st.session_state.data:
             plot_bgcolor='rgba(0,0,0,0)',
             paper_bgcolor='rgba(0,0,0,0)',
             xaxis=dict(
-                showline=True, linewidth=2, linecolor='#00A859',
-                showgrid=True, gridwidth=1, gridcolor='rgba(0, 168, 89, 0.2)',
-                title_font=dict(size=18, color='black', family="Arial, sans-serif"),
-                tickfont=dict(size=15, color='black', family="Arial, sans-serif")
+                showline=True, linewidth=1, linecolor='black',
+                showgrid=True, gridwidth=1, gridcolor='rgba(0,0,0,0.1)',
+                title_font=dict(size=16, color='black', family="Arial, sans-serif"),
+                tickfont=dict(size=14, color='black', family="Arial, sans-serif")
             ),
             yaxis=dict(
-                showline=True, linewidth=2, linecolor='#00A859',
-                showgrid=True, gridwidth=1, gridcolor='rgba(0, 168, 89, 0.2)',
-                title_font=dict(size=18, color='black', family="Arial, sans-serif"),
-                tickfont=dict(size=15, color='black', family="Arial, sans-serif")
-            ),
-            shapes=[
-                dict(
-                    type="rect",
-                    xref="paper", yref="paper",
-                    x0=0, y0=0, x1=1, y1=1,
-                    line=dict(color="#00A859", width=3)
-                )
-            ]
+                showline=True, linewidth=1, linecolor='black',
+                showgrid=True, gridwidth=1, gridcolor='rgba(0,0,0,0.1)',
+                title_font=dict(size=16, color='black', family="Arial, sans-serif"),
+                tickfont=dict(size=14, color='black', family="Arial, sans-serif")
+            )
         )
         st.plotly_chart(fig, use_container_width=True)
 
@@ -520,8 +536,8 @@ if st.session_state.data:
             upper_pct = ((float(upper[-1]) - last_hist) / abs(last_hist) * 100) if upper and last_hist != 0 else 0.0
             direction_word = "up" if change_pct >= 0 else "down"
             summary_lines = [
-                f"📈 Next **{forecast_horizon}** {detected_freq} period(s): central estimate **{direction_word} {abs(change_pct):.1f}%** from current level.",
-                f"Lower bound: **{lower_pct:+.1f}%** · Upper bound: **{upper_pct:+.1f}%**.",
+                f"📈 Next <strong>{forecast_horizon}</strong> {detected_freq} period(s): central estimate <strong>{direction_word} {abs(change_pct):.1f}%</strong> from current level.",
+                f"Lower bound: <strong>{lower_pct:+.1f}%</strong> · Upper bound: <strong>{upper_pct:+.1f}%</strong>.",
             ]
             if dq_warning:
                 summary_lines.append(f"⚠️ {dq_warning}")
@@ -570,26 +586,18 @@ if st.session_state.data:
             fig_shap.update_layout(
                 yaxis=dict(
                     categoryorder='total ascending',
-                    showline=True, linewidth=2, linecolor='#00A859',
-                    title_font=dict(size=18, color='black', family="Arial, sans-serif"),
-                    tickfont=dict(size=15, color='black', family="Arial, sans-serif")
+                    showline=True, linewidth=1, linecolor='black',
+                    title_font=dict(size=16, color='black', family="Arial, sans-serif"),
+                    tickfont=dict(size=14, color='black', family="Arial, sans-serif")
                 ),
                 xaxis=dict(
-                    showline=True, linewidth=2, linecolor='#00A859',
-                    showgrid=True, gridwidth=1, gridcolor='rgba(0, 168, 89, 0.2)',
-                    title_font=dict(size=18, color='black', family="Arial, sans-serif"),
-                    tickfont=dict(size=15, color='black', family="Arial, sans-serif")
+                    showline=True, linewidth=1, linecolor='black',
+                    showgrid=True, gridwidth=1, gridcolor='rgba(0,0,0,0.1)',
+                    title_font=dict(size=16, color='black', family="Arial, sans-serif"),
+                    tickfont=dict(size=14, color='black', family="Arial, sans-serif")
                 ),
                 plot_bgcolor='rgba(0,0,0,0)',
-                paper_bgcolor='rgba(0,0,0,0)',
-                shapes=[
-                    dict(
-                        type="rect",
-                        xref="paper", yref="paper",
-                        x0=0, y0=0, x1=1, y1=1,
-                        line=dict(color="#00A859", width=3)
-                    )
-                ]
+                paper_bgcolor='rgba(0,0,0,0)'
             )
             st.plotly_chart(fig_shap, use_container_width=True)
 
@@ -675,25 +683,17 @@ if st.session_state.data:
                 plot_bgcolor='rgba(0,0,0,0)',
                 paper_bgcolor='rgba(0,0,0,0)',
                 xaxis=dict(
-                    showline=True, linewidth=2, linecolor='#00A859',
-                    showgrid=True, gridwidth=1, gridcolor='rgba(0, 168, 89, 0.2)',
-                    title_font=dict(size=18, color='black', family="Arial, sans-serif"),
-                    tickfont=dict(size=15, color='black', family="Arial, sans-serif")
+                    showline=True, linewidth=1, linecolor='black',
+                    showgrid=True, gridwidth=1, gridcolor='rgba(0,0,0,0.1)',
+                    title_font=dict(size=16, color='black', family="Arial, sans-serif"),
+                    tickfont=dict(size=14, color='black', family="Arial, sans-serif")
                 ),
                 yaxis=dict(
-                    showline=True, linewidth=2, linecolor='#00A859',
-                    showgrid=True, gridwidth=1, gridcolor='rgba(0, 168, 89, 0.2)',
-                    title_font=dict(size=18, color='black', family="Arial, sans-serif"),
-                    tickfont=dict(size=15, color='black', family="Arial, sans-serif")
-                ),
-                shapes=[
-                    dict(
-                        type="rect",
-                        xref="paper", yref="paper",
-                        x0=0, y0=0, x1=1, y1=1,
-                        line=dict(color="#00A859", width=3)
-                    )
-                ]
+                    showline=True, linewidth=1, linecolor='black',
+                    showgrid=True, gridwidth=1, gridcolor='rgba(0,0,0,0.1)',
+                    title_font=dict(size=16, color='black', family="Arial, sans-serif"),
+                    tickfont=dict(size=14, color='black', family="Arial, sans-serif")
+                )
             )
             st.plotly_chart(fig_sc, use_container_width=True)
 
