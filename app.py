@@ -3,12 +3,17 @@ import requests
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
+import os
+from dotenv import load_dotenv
 
 # --- Configuration ---
 st.set_page_config(page_title="FutureLens AI - Powered by NatWest", layout="wide", page_icon="🟣")
 
-import os
-API_URL = os.environ.get("API_URL", "http://localhost:8000")
+
+
+load_dotenv()  # Load from .env file
+
+API_URL = os.getenv("API_URL", "http://localhost:8000")
 
 st.markdown("""
 <style>
