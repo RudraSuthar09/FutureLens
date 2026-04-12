@@ -78,6 +78,109 @@ def _sanitize_for_json(data):
     return json.loads(json.dumps(data, cls=NumpyEncoder))
 
 
+def _get_freq_info(freq_code: str) -> dict:
+    """Map a pandas freq alias (e.g. 'D', 'W', 'MS') to human label and period multipliers."""
+    if not freq_code:
+        return {"label": "week", "per_week": 1, "per_month": 4}
+    code = freq_code.upper()
+    if code.startswith("B") or code.startswith("D"):
+        return {"label": "day", "per_week": 7, "per_month": 30}
+    elif code.startswith("H") or code.startswith("T"):
+        return {"label": "hour", "per_week": 168, "per_month": 720}
+    elif code.startswith("W"):
+        return {"label": "week", "per_week": 1, "per_month": 4}
+    elif code.startswith("M") or code.startswith("BM"):
+        return {"label": "month", "per_week": 0.25, "per_month": 1}
+    elif code.startswith("Q"):
+        return {"label": "quarter", "per_week": 0.077, "per_month": 0.333}
+    elif code.startswith("Y") or code.startswith("A"):
+        return {"label": "year", "per_week": 0.019, "per_month": 0.083}
+    return {"label": "week", "per_week": 1, "per_month": 4}
+
+
+def _compute_column_relationships(
+    df_work: pd.DataFrame,
+    original_target: str,
+    feature_cols: list,
+) -> dict:
+    """Compute Pearson correlations, profit margin, and lag-1 correlations.
+
+    df_work uses 'sales' as the internal target column name regardless of what
+    the original column was called.
+    """
+    relationships: dict = {
+        "correlations_with_target": {},
+        "profit_margin": None,
+        "lag_correlations": {},
+    }
+
+    # --- Pearson correlations with the target ---
+    for col in feature_cols:
+        if col not in df_work.columns:
+            continue
+        try:
+            aligned = df_work[["sales", col]].dropna()
+            if len(aligned) < 4:
+                continue
+            corr = round(float(aligned["sales"].corr(aligned[col])), 3)
+            relationships["correlations_with_target"][col] = corr
+        except Exception:
+            continue
+
+    # --- Profit margin: ratio when target is profit-like and a sales-like col exists ---
+    target_lower = original_target.lower()
+    is_profit_target = any(k in target_lower for k in ["profit", "income", "earnings", "margin", "net"])
+    is_sales_target = any(k in target_lower for k in ["sales", "revenue", "turnover"])
+
+    for col in feature_cols:
+        if col not in df_work.columns:
+            continue
+        col_lower = col.lower()
+        try:
+            if is_profit_target and any(k in col_lower for k in ["sales", "revenue", "turnover"]):
+                aligned = df_work[["sales", col]].dropna()
+                aligned = aligned[aligned[col] != 0]
+                if len(aligned) >= 4:
+                    margin = round(float((aligned["sales"] / aligned[col]).mean()), 4)
+                    relationships["profit_margin"] = {
+                        "ratio": margin,
+                        "profit_col": original_target,
+                        "sales_col": col,
+                    }
+                    break
+            elif is_sales_target and any(k in col_lower for k in ["profit", "income", "earnings", "net"]):
+                aligned = df_work[["sales", col]].dropna()
+                aligned = aligned[aligned["sales"] != 0]
+                if len(aligned) >= 4:
+                    margin = round(float((aligned[col] / aligned["sales"]).mean()), 4)
+                    relationships["profit_margin"] = {
+                        "ratio": margin,
+                        "profit_col": col,
+                        "sales_col": original_target,
+                    }
+                    break
+        except Exception:
+            continue
+
+    # --- Lag-1 correlations: does last period's feature predict this period's target? ---
+    for col in feature_cols:
+        if col not in df_work.columns:
+            continue
+        try:
+            shifted = df_work[col].shift(1)
+            aligned = pd.concat([df_work["sales"], shifted], axis=1).dropna()
+            aligned.columns = ["target", "lagged"]
+            if len(aligned) < 4:
+                continue
+            lag_corr = round(float(aligned["target"].corr(aligned["lagged"])), 3)
+            if abs(lag_corr) > 0.1:
+                relationships["lag_correlations"][col] = lag_corr
+        except Exception:
+            continue
+
+    return relationships
+
+
 def detect_target_column(df: pd.DataFrame, date_col: str) -> str:
     """
     Finds the best numeric column to forecast:
@@ -198,7 +301,14 @@ def build_dataset_intelligence_card(
     covering ALL dataset columns. Built once per upload."""
 
     target = detected_columns["target"]
-    freq_label = forecast_results.get("detected_freq_label", "week")
+
+    # --- Fix: map detected_freq (pandas alias) to human-readable label ---
+    raw_freq = forecast_results.get("detected_freq", "W")
+    freq_info = _get_freq_info(raw_freq)
+    freq_label = freq_info["label"]
+    periods_per_week = freq_info["per_week"]
+    periods_per_month = freq_info["per_month"]
+
     horizon = forecast_results.get("forecast_horizon", 4)
 
     # Primary forecast column stats
@@ -260,6 +370,9 @@ def build_dataset_intelligence_card(
             "mean": round(float(series.mean()), 2)
         }
 
+    # --- Column relationships (new) ---
+    column_relationships = _compute_column_relationships(df_work, target, feature_cols)
+
     # Anomaly summary (compact)
     if anomalies:
         high = [a for a in anomalies if a.get("severity") == "high"]
@@ -295,6 +408,9 @@ def build_dataset_intelligence_card(
     return {
         "target_col": target,
         "freq_label": freq_label,
+        "detected_freq": raw_freq,
+        "periods_per_week": periods_per_week,
+        "periods_per_month": periods_per_month,
         "horizon": horizon,
         "one_liner": one_liner,
         "change_pct": round(change_pct, 1),
@@ -310,6 +426,7 @@ def build_dataset_intelligence_card(
         "top_driver": top_driver,
         "top_driver_direction": top_driver_direction,
         "other_columns": other_cols,
+        "column_relationships": column_relationships,
         "anomaly_plain": anomaly_plain,
         "anomaly_count": len(anomalies),
         "reliability_plain": reliability_plain,
@@ -319,11 +436,14 @@ def build_dataset_intelligence_card(
 
 def build_compact_system_prompt(card: dict, detected_columns: dict) -> str:
     """Build a token-efficient system prompt from the intelligence card.
-    Target: under 450 tokens total. Built ONCE at upload, reused for every chat message."""
+    Built ONCE at upload, reused for every chat message."""
 
     target = card["target_col"]
     freq = card["freq_label"]
     horizon = card["horizon"]
+    per_week = card.get("periods_per_week", 1)
+    per_month = card.get("periods_per_month", 4)
+    detected_freq = card.get("detected_freq", "W")
 
     # Build other columns description (dynamic, works for ANY dataset)
     other_col_lines = []
@@ -335,60 +455,107 @@ def build_compact_system_prompt(card: dict, detected_columns: dict) -> str:
         )
     other_cols_str = "\n".join(other_col_lines) if other_col_lines else "  No additional columns."
 
+    # Build column relationships section
+    rel = card.get("column_relationships", {})
+    corr_lines = []
+    for col, corr in rel.get("correlations_with_target", {}).items():
+        direction = "positive" if corr > 0 else "negative"
+        strength = "strong" if abs(corr) > 0.6 else ("moderate" if abs(corr) > 0.3 else "weak")
+        corr_lines.append(f"  {col}: {corr:+.2f} ({strength} {direction} link with {target})")
+    lag_lines = []
+    for col, corr in rel.get("lag_correlations", {}).items():
+        lag_lines.append(f"  Last period's {col} predicts this period's {target}: {corr:+.2f}")
+    margin = rel.get("profit_margin")
+    margin_line = ""
+    if margin:
+        margin_line = (
+            f"  Profit margin: every 1 unit of {margin['sales_col']} "
+            f"generates {margin['ratio']:.4f} units of {margin['profit_col']} on average."
+        )
+    relationships_str = "\n".join(corr_lines + lag_lines)
+    if margin_line:
+        relationships_str += f"\n{margin_line}"
+    if not relationships_str:
+        relationships_str = "  No multi-column relationships computed (single numeric column dataset)."
+
+    # Build cross-column scenario formula hint
+    if corr_lines:
+        cross_col_formula = (
+            f"For cross-column scenarios (e.g. 'if {list(rel.get('correlations_with_target', {{}}).keys())[0] if rel.get('correlations_with_target') else 'X'} increases by N%'): "
+            f"use estimated_{target}_change = correlation(column, {target}) × N%. "
+            f"Always add: 'Note: correlation is not causation — this is a statistical estimate.'"
+        )
+    else:
+        cross_col_formula = ""
+
+    # Frequency period conversion rules
+    if freq == "day":
+        freq_rules = (
+            f"1 week = 7 periods. 1 month = 30 periods. "
+            f"'Next N weeks' means next {int(7)} × N = N×7 periods."
+        )
+    elif freq == "week":
+        freq_rules = (
+            f"1 week = 1 period. 1 month = 4 periods. "
+            f"'Next N months' means next N×4 periods."
+        )
+    elif freq == "month":
+        freq_rules = (
+            f"1 month = 1 period. 1 quarter = 3 periods. "
+            f"'Next N weeks' means next N×0.25 periods (round up)."
+        )
+    else:
+        freq_rules = f"Data is {freq}ly. Convert user time references to periods accordingly."
+
     # Build period-by-period forecast (compact)
     periods_str = "\n".join([f"  {line}" for line in card["period_lines"]])
 
     prompt = f"""You are FutureLens, a friendly AI forecasting assistant.
 
-DATASET:
+[DATASET PROFILE]
 - Forecasting: {target} | Date col: {detected_columns['date']}
-- Frequency: {freq}ly data | Horizon: {horizon} {freq}s ahead
+- Data frequency: {freq}ly ({detected_freq}) | Forecast horizon: {horizon} {freq}s ahead
 
-FORECAST FOR {target.upper()}:
+[FREQUENCY CONTEXT]
+{freq_rules}
+When user says "next N weeks/months", convert N to periods using the rules above before answering.
+Always state how many periods your answer covers.
+
+[FORECAST FOR {target.upper()}]
 {card['one_liner']}
 By period:
 {periods_str}
 Top driver: {card['top_driver']} ({card['top_driver_direction']} impact)
 
-OTHER COLUMNS IN THIS DATASET:
+[COLUMN STATISTICS]
 {other_cols_str}
 
-ANOMALIES: {card['anomaly_plain']}
-RELIABILITY: {card['reliability_plain']}
+[COLUMN RELATIONSHIPS — correlations with {target}]
+{relationships_str}
 
-ANSWER RULES — FOLLOW EXACTLY:
+[ANOMALIES]
+{card['anomaly_plain']}
 
-FORECAST QUESTIONS (next weeks/months/future/predict/trend):
-Start with EXACTLY:
-"Next {horizon} {freq}s: central estimate {card['change_pct']:+.1f}% ({card['trend_direction']}). Lower: {card['lower_pct']:+.1f}%. Upper: {card['upper_pct']:+.1f}%."
-Then 1-2 plain English sentences about the pattern.
-Mention top driver. End with one suggested question.
+[RELIABILITY]
+{card['reliability_plain']}
 
-ANOMALY QUESTIONS (unusual/spike/drop/sudden/alert):
-Start with: "{card['anomaly_plain']}"
-Then explain the cause in plain English.
-Then suggest 1 concrete next step.
+[MANDATORY ROUTING — follow exactly]
+WHY questions (why did X happen / what caused the drop): Use ANOMALIES data above first. State the anomaly date, severity and deviation. Then explain in plain English. Never answer WHY from general knowledge.
+WHAT WILL HAPPEN questions (next N weeks/months/forecast): Convert N to periods using FREQUENCY CONTEXT. Use exact forecast numbers from FORECAST section above. State period range explicitly.
+WHAT IF / SCENARIO questions (if X increases by N%):
+  - If question is about {target} itself: "Under a +N% scenario, {target} reaches [{card['last_historical_value']:.2f} × (1+N/100)] (vs {card['last_historical_value']:.2f} baseline). Range: [value×0.95]–[value×1.05]."
+  - If question links another column to {target}: {cross_col_formula if cross_col_formula else "Use the correlation data in COLUMN RELATIONSHIPS and explain the statistical link."}
+OTHER COLUMN questions: Use COLUMN STATISTICS above. "While my full forecast is for {target}, here is what I see for [col]: current=[last], trend=[trend]."
+UNKNOWN questions: Never say "I cannot". State the one-liner and suggest 3 specific questions.
 
-SCENARIO QUESTIONS (what if/suppose/if X increases by):
-Extract the % from their question.
-Answer format: "Under a [X%] scenario, {target} is expected to reach [last_value * (1+X/100):.2f] (vs {card['last_historical_value']:.2f} baseline). Range: [value*0.95:.2f]–[value*1.05:.2f]."
-Compute the numbers yourself using the formula above.
-
-OTHER COLUMN QUESTIONS (user asks about a non-target col):
-Use the OTHER COLUMNS data above.
-Say: "While my full forecast is for {target}, here is what I see for [col]: current value [last], trend is [trend]."
-
-UNKNOWN QUESTIONS:
-Never say "I cannot". Instead give the one-liner and suggest 3 questions they can ask.
-
-ALWAYS: plain English only. No MAPE, SHAP, LightGBM, Prophet, or technical terms.
-ALWAYS: keep response under 150 words.
-ALWAYS: end with one follow-up question suggestion.
+[RESPONSE FORMAT]
+Lead with the number or direct answer. Max 4 sentences. Plain English only — no technical terms.
+End with exactly one follow-up question suggestion.
+Never refuse when data is available above. Never use general business knowledge when specific data is provided.
 """
 
-    # Token guard: warn if prompt exceeds 500 words
     word_count = len(prompt.split())
-    if word_count > 500:
+    if word_count > 700:
         logger.warning(
             f"System prompt is {word_count} words. "
             f"Consider reducing other_columns count."
@@ -692,10 +859,9 @@ async def chat_endpoint(request: Request):
         system_instruction=system_prompt
     )
 
-    # Step 4: Truncate response if too long
-    # 400 chars is enough for any good answer
-    if len(response_text) > 500:
-        cut = response_text.find("\n\n", 300)
+    # Step 4: Truncate response if too long — 700 chars allows 4 full sentences
+    if len(response_text) > 700:
+        cut = response_text.find("\n\n", 500)
         if cut > 0:
             response_text = response_text[:cut]
 
@@ -703,13 +869,16 @@ async def chat_endpoint(request: Request):
     target = card.get("target_col", "your metric")
     freq = card.get("freq_label", "week")
     other_cols = list(card.get("other_columns", {}).keys())
+    corr_cols = list(card.get("column_relationships", {}).get("correlations_with_target", {}).keys())
     suggested = [
         f"What will {target} look like next {freq}?",
         "Are there any sudden changes I should look at?",
         f"What if {target} increases by 10%?"
     ]
-    # Replace 3rd suggestion with other column question if available
-    if other_cols:
+    # Replace 3rd suggestion with cross-column question if a correlated column exists
+    if corr_cols:
+        suggested[2] = f"If {corr_cols[0]} increases by 10%, how does that affect {target}?"
+    elif other_cols:
         suggested[2] = f"Tell me about the trend in {other_cols[0]}."
 
     # Step 6: Save truncated response to DB

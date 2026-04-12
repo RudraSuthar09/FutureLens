@@ -53,7 +53,7 @@ def chat(message: str,
         response = model.generate_content(
             contents=contents,
             generation_config=genai.types.GenerationConfig(
-                max_output_tokens=600,   # 🔼 increase for full answers
+                max_output_tokens=800,   # sufficient for 4 sentences + follow-up question
                 temperature=0.2,
                 top_p=0.8,
                 top_k=20
