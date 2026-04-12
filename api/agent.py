@@ -19,13 +19,19 @@ You will receive:
 
 Your job: explain the JSON result in plain English. Rules:
 - Lead with the KEY NUMBER or direct answer in sentence 1
-- Give a complete answer.
-- Use 4 to 8 sentences when needed.
+- Keep answer within 4 to 5 short lines.
+- Answer must be fully complete.
+- Never stop mid-sentence.
+- Use point-to-point style.
+- Never end with words like: 'by the end of', 'increase to', 'because', 'from', 'vs'.
+- If needed, shorten the answer but always complete it.
+- Start with the direct answer or key number.
+- Mention important drivers/reasons if available.
 - If the question asks for recommendation, explain reasoning clearly.
-- Never cut off mid-sentence.
+- For anomaly questions: explain what changed, likely drivers only if present in JSON, and suggest one next step.
+- Never invent causes. Only mention drivers explicitly present in the JSON result.
 - No technical jargon (no "MAPE", "conformal", "SHAP", "correlation coefficient")
 - If cross_column_impact exists, mention it with "Note: this is a statistical estimate, not guaranteed"
-- End with exactly ONE follow-up question the user might want to ask next
 - Never say "I don't know" if data is in the JSON"""
 
 
@@ -46,7 +52,7 @@ def _pick_model() -> str:
 MODEL_NAME = os.environ.get("GEMINI_MODEL") or _pick_model()
 
 
-def explain(user_message: str, tool_result: dict, card: dict) -> str:
+def explain(user_message: str, tool_result: dict, card: dict,chat_history=None) -> str:
     """
     Gemini explains a pre-computed tool result.
     Token cost: ~300 tokens in, ~150 tokens out.
@@ -69,8 +75,19 @@ def explain(user_message: str, tool_result: dict, card: dict) -> str:
         trimmed = {k: tool_result[k] for k in important_keys if k in tool_result}
         result_str = json.dumps(trimmed, indent=None)
 
+    history_text = ""
+
+    if chat_history:
+        history_lines = []
+        for row in chat_history:
+            role = row["role"].capitalize()
+            content = row["content"]
+            history_lines.append(f"{role}: {content}")
+        history_text = "Recent conversation:\n" + "\n".join(history_lines) + "\n\n"
+
     user_content = (
-        f"User asked: {user_message}\n\n"
+        history_text +
+        f"Current user question: {user_message}\n\n"
         f"Backend tool '{tool_name}' returned:\n{result_str}"
     )
 
@@ -81,7 +98,7 @@ def explain(user_message: str, tool_result: dict, card: dict) -> str:
 
     generation_config = genai.types.GenerationConfig(
         max_output_tokens=1500,   # Short answer — 4 sentences max
-        temperature=0.3,
+        temperature=0.2,
         top_p=0.85,
     )
 
@@ -92,7 +109,19 @@ def explain(user_message: str, tool_result: dict, card: dict) -> str:
                 [{"role": "user", "parts": [user_content]}],
                 generation_config=generation_config
             )
-            return response.text
+            text = getattr(response, "text", "") or ""
+            text = text.strip()
+            bad_endings = (
+                "by the end of", "increase to", "decrease to",
+                "from", "vs", "because", "due to", "expected to"
+            )
+            if text.lower().endswith(bad_endings):
+                text += " the forecast period."
+
+            if text and text[-1] not in ".!?":
+                text += "."
+
+            return text
 
         except Exception as e:
             last_error = e
@@ -147,10 +176,16 @@ def _safe_fallback(tool_result: dict, card: dict, message: str) -> str:
         return base_text
 
     if tool == "anomaly":
-        return (
-            f"{tool_result.get('anomaly_plain', 'No anomalies detected.')} "
-            f"Would you like to know the forecast for the next {freq}?"
-        )
+        msg = tool_result.get("anomaly_plain", "An unusual change was detected.")
+        drivers = tool_result.get("possible_drivers", [])
+        
+        reply = msg
+
+        if drivers:
+            reply += " Potential drivers: " + ", ".join(drivers[:2]) + "."
+        
+        reply += f" Suggested next step: investigate affected region/system logs and compare with recent trends."
+        return reply
 
     if tool == "recommendation":
         recs = tool_result.get("recommendations", [])

@@ -17,7 +17,7 @@ load_dotenv()
 from api.database import (
     init_db, save_upload, save_forecast, save_anomalies, save_chat,
     get_forecast, get_anomalies, get_chat_history, get_recent_uploads,
-    save_system_prompt, get_system_prompt
+    save_system_prompt, get_system_prompt,get_recent_chat
 )
 from api.forecaster import run_forecast, detect_date_column
 from api.rca import compute_shap, explain_rca
@@ -844,6 +844,7 @@ async def chat_endpoint(request: Request):
     forecast_data = get_forecast(session_id) or {}
     anomalies_data = get_anomalies(session_id) or []
     group_forecasts = forecast_data.get("group_forecasts") or []
+    recent_chat = get_recent_chat(session_id, limit=4)
 
     # ── STEP 1: Groq plans the tool ──
     tool_call = plan(message, card)
@@ -866,6 +867,7 @@ async def chat_endpoint(request: Request):
             user_message=message,
             tool_result=tool_result,
             card=card,
+            chat_history=recent_chat
         )
         # Detect if Gemini silently rate-limited and fell back
         if "rate" in response_text.lower() and "limit" in response_text.lower():
@@ -896,7 +898,7 @@ async def chat_endpoint(request: Request):
         if corr_cols else f"What if {target} increases by 10%?"
     ]
 
-    save_chat(session_id, message, response_text[:250])
+    save_chat(session_id, message, response_text[:400])
 
     return {
         "response": response_text,

@@ -139,13 +139,55 @@ def save_chat(session_id: str, message: str, response: str) -> bool:
             cursor = conn.cursor()
             cursor.execute(
                 'INSERT INTO chat_history (session_id, user_message, agent_response) VALUES (?, ?, ?)',
-                (session_id, message, response[:250])
+                (session_id, message, response[:400])
             )
             conn.commit()
         return True
     except Exception as e:
         logger.error(f"Error saving chat: {e}")
         return False
+
+def get_recent_chat(session_id: str, limit: int = 4):
+    """Returns recent chat history formatted for Gemini context."""
+    try:
+        with get_connection() as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+
+            cursor.execute(
+                """
+                SELECT user_message, agent_response
+                FROM chat_history
+                WHERE session_id = ?
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (session_id, limit)
+            )
+
+            rows = cursor.fetchall()
+
+        rows = list(reversed(rows))
+
+        history = []
+        for row in rows:
+            if row["user_message"]:
+                history.append({
+                    "role": "user",
+                    "content": row["user_message"]
+                })
+
+            if row["agent_response"]:
+                history.append({
+                    "role": "assistant",
+                    "content": row["agent_response"]
+                })
+
+        return history
+
+    except Exception as e:
+        logger.error(f"Error loading chat history: {e}")
+        return []
 
 def get_forecast(session_id: str) -> Optional[Dict[str, Any]]:
     """Retrieves forecast results for a session."""

@@ -345,8 +345,10 @@ with st.sidebar:
         except FileNotFoundError:
             st.error("Sample data not found. Please run generate_data.py first.")
 
-msg_count = len(st.session_state.get("chat_history", []))
-user_msgs = msg_count // 2  # user + assistant pairs
+user_msgs = sum(
+    1 for msg in st.session_state.get("chat_history", [])
+    if msg.get("role") == "user"
+)  # user + assistant pairs
 st.sidebar.markdown("---")
 st.sidebar.caption(
     f"💬 {user_msgs} questions asked this session."
@@ -738,10 +740,10 @@ if st.session_state.data:
                 pass
             st.rerun()
 
+            # Show all previous messages first
         for msg in st.session_state.chat_history:
             with st.chat_message(msg["role"]):
-                st.write(msg["content"])
-
+                st.markdown(msg["content"])
         user_input = st.chat_input("Ask about the forecast, anomalies, or actions...")
         if user_input:
             st.session_state.chat_history.append({"role": "user", "content": user_input})
@@ -796,5 +798,6 @@ if st.session_state.data:
                                          use_container_width=True):
                                 st.session_state.pending_question = q
                                 st.rerun()
+                st.rerun()
 else:
     st.markdown('<div class="custom-info-box" style="margin-top: 50px;">Please upload a CSV or click the Demo Mode button in the sidebar to begin.</div>', unsafe_allow_html=True)
