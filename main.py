@@ -395,6 +395,8 @@ ALWAYS: end with one follow-up question suggestion.
         )
 
     return prompt
+
+@app.post("/upload")
 async def upload_file(file: UploadFile = File(...)):
     """
     Accepts CSV, auto-detects columns, runs forecast, RCA, anomalies, and saves to DB.
