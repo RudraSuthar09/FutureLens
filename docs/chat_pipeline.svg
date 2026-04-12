@@ -1,0 +1,125 @@
+<svg viewBox="0 0 760 500" xmlns="http://www.w3.org/2000/svg" font-family="'Segoe UI', Arial, sans-serif">
+  <defs>
+    <linearGradient id="bg3" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0f1724"/>
+      <stop offset="100%" stop-color="#1a2540"/>
+    </linearGradient>
+    <marker id="a3" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#38bdf8"/>
+    </marker>
+    <marker id="a3g" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#34d399"/>
+    </marker>
+    <marker id="a3y" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#fbbf24"/>
+    </marker>
+    <filter id="sh3">
+      <feDropShadow dx="0" dy="3" stdDeviation="5" flood-color="#000" flood-opacity="0.5"/>
+    </filter>
+  </defs>
+
+  <rect width="760" height="500" fill="url(#bg3)" rx="12"/>
+
+  <text x="380" y="34" text-anchor="middle" fill="#f8fafc" font-size="16" font-weight="700" letter-spacing="1">Chat Pipeline — Plan → Execute → Explain</text>
+  <line x1="120" y1="44" x2="640" y2="44" stroke="#334155" stroke-width="1"/>
+
+  <!-- User input -->
+  <rect x="280" y="56" width="200" height="36" rx="20" fill="#1e3a5f" stroke="#38bdf8" stroke-width="2" filter="url(#sh3)"/>
+  <text x="380" y="71" text-anchor="middle" fill="#38bdf8" font-size="11" font-weight="700">💬 User Question</text>
+  <text x="380" y="84" text-anchor="middle" fill="#bae6fd" font-size="9">"What will sales look like next 3 weeks?"</text>
+
+  <line x1="380" y1="92" x2="380" y2="112" stroke="#38bdf8" stroke-width="1.5" marker-end="url(#a3)"/>
+
+  <!-- Stage 1 label -->
+  <text x="60" y="126" fill="#7c3aed" font-size="10" font-weight="700">STAGE 1</text>
+  <text x="60" y="139" fill="#a78bfa" font-size="9">PLAN</text>
+
+  <!-- Groq box -->
+  <rect x="210" y="114" width="340" height="58" rx="9" fill="#2d1b69" stroke="#7c3aed" stroke-width="1.5" filter="url(#sh3)"/>
+  <text x="380" y="132" text-anchor="middle" fill="#a78bfa" font-size="10" font-weight="700">Groq · llama-3.1-8b-instant</text>
+  <text x="380" y="147" text-anchor="middle" fill="#c4b5fd" font-size="9">Intent classification · ~80 tokens · &lt;200ms</text>
+  <rect x="226" y="154" width="308" height="12" rx="3" fill="#1e1340"/>
+  <text x="380" y="163" text-anchor="middle" fill="#ddd6fe" font-size="8.5">{"tool": "forecast", "args": {"periods": 3}}</text>
+
+  <!-- Fallback note -->
+  <rect x="562" y="126" width="142" height="36" rx="6" fill="#1e1340" stroke="#6d28d9" stroke-width="1" stroke-dasharray="3,2"/>
+  <text x="633" y="140" text-anchor="middle" fill="#a78bfa" font-size="8.5">Fallback: keyword</text>
+  <text x="633" y="153" text-anchor="middle" fill="#a78bfa" font-size="8.5">regex planner (instant)</text>
+  <line x1="550" y1="143" x2="564" y2="143" stroke="#6d28d9" stroke-width="1" stroke-dasharray="3,2"/>
+
+  <line x1="380" y1="172" x2="380" y2="192" stroke="#38bdf8" stroke-width="1.5" marker-end="url(#a3)"/>
+
+  <!-- Stage 2 label -->
+  <text x="60" y="206" fill="#10b981" font-size="10" font-weight="700">STAGE 2</text>
+  <text x="60" y="219" fill="#34d399" font-size="9">EXECUTE</text>
+
+  <!-- Tools grid -->
+  <rect x="50" y="194" width="660" height="106" rx="9" fill="#0a2e1c" stroke="#10b981" stroke-width="1.5" filter="url(#sh3)"/>
+  <text x="380" y="212" text-anchor="middle" fill="#6ee7b7" font-size="10" font-weight="700">10 Pure-Python Tool Functions · No LLM · Instant</text>
+
+  <!-- tool pills row 1 -->
+  <rect x="66" y="220" width="80" height="20" rx="10" fill="#064e3b"/>
+  <text x="106" y="233" text-anchor="middle" fill="#a7f3d0" font-size="8.5">forecast</text>
+  <rect x="154" y="220" width="80" height="20" rx="10" fill="#064e3b"/>
+  <text x="194" y="233" text-anchor="middle" fill="#a7f3d0" font-size="8.5">scenario</text>
+  <rect x="242" y="220" width="80" height="20" rx="10" fill="#064e3b"/>
+  <text x="282" y="233" text-anchor="middle" fill="#a7f3d0" font-size="8.5">anomaly</text>
+  <rect x="330" y="220" width="100" height="20" rx="10" fill="#064e3b"/>
+  <text x="380" y="233" text-anchor="middle" fill="#a7f3d0" font-size="8.5">group_forecast</text>
+  <rect x="438" y="220" width="126" height="20" rx="10" fill="#064e3b"/>
+  <text x="501" y="233" text-anchor="middle" fill="#a7f3d0" font-size="8.5">categorical_analysis</text>
+  <!-- row 2 -->
+  <rect x="66" y="248" width="100" height="20" rx="10" fill="#064e3b"/>
+  <text x="116" y="261" text-anchor="middle" fill="#a7f3d0" font-size="8.5">profitability</text>
+  <rect x="174" y="248" width="120" height="20" rx="10" fill="#064e3b"/>
+  <text x="234" y="261" text-anchor="middle" fill="#a7f3d0" font-size="8.5">correlation_deep</text>
+  <rect x="302" y="248" width="110" height="20" rx="10" fill="#064e3b"/>
+  <text x="357" y="261" text-anchor="middle" fill="#a7f3d0" font-size="8.5">column_stats</text>
+  <rect x="420" y="248" width="120" height="20" rx="10" fill="#064e3b"/>
+  <text x="480" y="261" text-anchor="middle" fill="#a7f3d0" font-size="8.5">recommendation</text>
+  <rect x="548" y="248" width="80" height="20" rx="10" fill="#064e3b"/>
+  <text x="588" y="261" text-anchor="middle" fill="#a7f3d0" font-size="8.5">compare</text>
+
+  <rect x="66" y="276" width="624" height="16" rx="4" fill="#053d26"/>
+  <text x="378" y="288" text-anchor="middle" fill="#6ee7b7" font-size="8.5">All numbers computed from pre-built intelligence card — hallucination impossible</text>
+
+  <line x1="380" y1="300" x2="380" y2="320" stroke="#38bdf8" stroke-width="1.5" marker-end="url(#a3)"/>
+
+  <!-- Stage 3 label -->
+  <text x="60" y="334" fill="#f59e0b" font-size="10" font-weight="700">STAGE 3</text>
+  <text x="60" y="347" fill="#fbbf24" font-size="9">EXPLAIN</text>
+
+  <!-- Gemini box -->
+  <rect x="210" y="322" width="340" height="58" rx="9" fill="#1c1208" stroke="#f59e0b" stroke-width="1.5" filter="url(#sh3)"/>
+  <text x="380" y="340" text-anchor="middle" fill="#fcd34d" font-size="10" font-weight="700">Gemini Flash · gemini-1.5-flash</text>
+  <text x="380" y="354" text-anchor="middle" fill="#fde68a" font-size="9">Receives tool JSON ≤2000 chars + chat history</text>
+  <text x="380" y="368" text-anchor="middle" fill="#fde68a" font-size="9">Returns 4–5 sentence plain-English answer · ~150 tokens</text>
+
+  <!-- Fallback note -->
+  <rect x="562" y="334" width="142" height="36" rx="6" fill="#1c1208" stroke="#d97706" stroke-width="1" stroke-dasharray="3,2"/>
+  <text x="633" y="348" text-anchor="middle" fill="#fbbf24" font-size="8.5">Fallback: template</text>
+  <text x="633" y="361" text-anchor="middle" fill="#fbbf24" font-size="8.5">response with real #s</text>
+  <line x1="550" y1="351" x2="564" y2="351" stroke="#d97706" stroke-width="1" stroke-dasharray="3,2"/>
+
+  <line x1="380" y1="380" x2="380" y2="400" stroke="#38bdf8" stroke-width="1.5" marker-end="url(#a3)"/>
+
+  <!-- Response box -->
+  <rect x="120" y="402" width="520" height="66" rx="9" fill="#0c1f3a" stroke="#38bdf8" stroke-width="1.5" filter="url(#sh3)"/>
+  <text x="380" y="420" text-anchor="middle" fill="#38bdf8" font-size="10" font-weight="700">Response Returned to Frontend</text>
+  <rect x="134" y="426" width="130" height="14" rx="3" fill="#1e3a5f"/>
+  <text x="199" y="437" text-anchor="middle" fill="#bae6fd" font-size="8">response (plain text)</text>
+  <rect x="272" y="426" width="148" height="14" rx="3" fill="#1e3a5f"/>
+  <text x="346" y="437" text-anchor="middle" fill="#bae6fd" font-size="8">suggested_questions[3]</text>
+  <rect x="428" y="426" width="148" height="14" rx="3" fill="#1e3a5f"/>
+  <text x="502" y="437" text-anchor="middle" fill="#bae6fd" font-size="8">chart_context (mini chart)</text>
+  <text x="380" y="460" text-anchor="middle" fill="#64748b" font-size="8.5">Chat history saved to SQLite · Suggested questions based on actual column names and relationships</text>
+
+  <!-- Token cost annotation -->
+  <rect x="30" y="438" width="82" height="30" rx="5" fill="#0a1628" stroke="#334155" stroke-width="1"/>
+  <text x="71" y="451" text-anchor="middle" fill="#64748b" font-size="8">Groq: ~80 tok</text>
+  <text x="71" y="462" text-anchor="middle" fill="#64748b" font-size="8">Gemini: ~300→150</text>
+
+  <!-- Key insight banner -->
+  <rect x="30" y="478" width="700" height="14" rx="4" fill="#ffffff0a"/>
+  <text x="380" y="489" text-anchor="middle" fill="#94a3b8" font-size="8.5">Zero hallucination risk · LLMs never see raw data · All numbers come from Python tool computation</text>
+</svg>

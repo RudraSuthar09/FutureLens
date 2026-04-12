@@ -1,0 +1,197 @@
+<svg viewBox="0 0 900 540" xmlns="http://www.w3.org/2000/svg" font-family="'Segoe UI', Arial, sans-serif">
+  <defs>
+    <linearGradient id="bgGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0f1724"/>
+      <stop offset="100%" stop-color="#1a2540"/>
+    </linearGradient>
+    <linearGradient id="frontendGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#7c3aed"/>
+      <stop offset="100%" stop-color="#5b21b6"/>
+    </linearGradient>
+    <linearGradient id="backendGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#0ea5e9"/>
+      <stop offset="100%" stop-color="#0284c7"/>
+    </linearGradient>
+    <linearGradient id="mlGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#10b981"/>
+      <stop offset="100%" stop-color="#059669"/>
+    </linearGradient>
+    <linearGradient id="llmGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#f59e0b"/>
+      <stop offset="100%" stop-color="#d97706"/>
+    </linearGradient>
+    <linearGradient id="dbGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#ef4444"/>
+      <stop offset="100%" stop-color="#dc2626"/>
+    </linearGradient>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="3" result="coloredBlur"/>
+      <feMerge><feMergeNode in="coloredBlur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="shadow">
+      <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#000" flood-opacity="0.4"/>
+    </filter>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#94a3b8"/>
+    </marker>
+    <marker id="arrowBlue" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#38bdf8"/>
+    </marker>
+  </defs>
+
+  <!-- Background -->
+  <rect width="900" height="540" fill="url(#bgGrad)" rx="12"/>
+
+  <!-- Title -->
+  <text x="450" y="36" text-anchor="middle" fill="#f8fafc" font-size="18" font-weight="700" letter-spacing="1">FutureLens — System Architecture</text>
+  <line x1="200" y1="46" x2="700" y2="46" stroke="#334155" stroke-width="1"/>
+
+  <!-- ── FRONTEND ── -->
+  <rect x="30" y="65" width="200" height="110" rx="10" fill="url(#frontendGrad)" filter="url(#shadow)"/>
+  <text x="130" y="86" text-anchor="middle" fill="#ede9fe" font-size="11" font-weight="700" letter-spacing="1">STREAMLIT FRONTEND</text>
+  <text x="130" y="86" text-anchor="middle" fill="#ede9fe" font-size="11" font-weight="700" letter-spacing="1">STREAMLIT FRONTEND</text>
+  <rect x="42" y="94" width="176" height="18" rx="4" fill="#ffffff18"/>
+  <text x="130" y="107" text-anchor="middle" fill="#ddd6fe" font-size="10">📈 Forecast Tab</text>
+  <rect x="42" y="116" width="176" height="18" rx="4" fill="#ffffff18"/>
+  <text x="130" y="129" text-anchor="middle" fill="#ddd6fe" font-size="10">🔍 Root Cause Tab</text>
+  <rect x="42" y="138" width="176" height="18" rx="4" fill="#ffffff18"/>
+  <text x="130" y="151" text-anchor="middle" fill="#ddd6fe" font-size="10">🔀 Scenario Tab</text>
+  <rect x="42" y="160" width="176" height="10" rx="4" fill="#ffffff18"/>
+  <text x="130" y="169" text-anchor="middle" fill="#ddd6fe" font-size="10">💬 Chat Tab</text>
+
+  <!-- HTTP Arrow frontend → backend -->
+  <line x1="232" y1="120" x2="308" y2="120" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arrow)" stroke-dasharray="5,3"/>
+  <text x="270" y="113" text-anchor="middle" fill="#94a3b8" font-size="9">HTTP / REST</text>
+
+  <!-- ── FASTAPI BACKEND ── -->
+  <rect x="310" y="65" width="200" height="110" rx="10" fill="url(#backendGrad)" filter="url(#shadow)"/>
+  <text x="410" y="86" text-anchor="middle" fill="#e0f2fe" font-size="11" font-weight="700" letter-spacing="1">FASTAPI BACKEND</text>
+  <rect x="322" y="94" width="176" height="14" rx="3" fill="#ffffff18"/>
+  <text x="410" y="105" text-anchor="middle" fill="#bae6fd" font-size="9.5">POST /upload  ·  POST /chat</text>
+  <rect x="322" y="112" width="176" height="14" rx="3" fill="#ffffff18"/>
+  <text x="410" y="123" text-anchor="middle" fill="#bae6fd" font-size="9.5">POST /simulate  ·  POST /forecast_query</text>
+  <rect x="322" y="130" width="176" height="14" rx="3" fill="#ffffff18"/>
+  <text x="410" y="141" text-anchor="middle" fill="#bae6fd" font-size="9.5">GET /forecast  ·  GET /anomalies</text>
+  <rect x="322" y="148" width="176" height="14" rx="3" fill="#ffffff18"/>
+  <text x="410" y="159" text-anchor="middle" fill="#bae6fd" font-size="9.5">GET /history  ·  GET /health</text>
+
+  <!-- ── ML PIPELINE ── -->
+  <rect x="30" y="220" width="380" height="195" rx="10" fill="#0f2438" stroke="#10b981" stroke-width="1.5" filter="url(#shadow)"/>
+  <rect x="30" y="220" width="380" height="26" rx="10" fill="url(#mlGrad)"/>
+  <rect x="30" y="234" width="380" height="12" fill="url(#mlGrad)"/>
+  <text x="220" y="238" text-anchor="middle" fill="#ecfdf5" font-size="11" font-weight="700" letter-spacing="1">ML PIPELINE</text>
+
+  <!-- ML boxes row 1 -->
+  <rect x="44" y="254" width="100" height="42" rx="6" fill="#064e3b"/>
+  <text x="94" y="270" text-anchor="middle" fill="#6ee7b7" font-size="9.5" font-weight="600">Prophet</text>
+  <text x="94" y="284" text-anchor="middle" fill="#a7f3d0" font-size="8.5">Trend + Seasonality</text>
+  <text x="94" y="293" text-anchor="middle" fill="#a7f3d0" font-size="8.5">Decomposition</text>
+
+  <rect x="154" y="254" width="100" height="42" rx="6" fill="#064e3b"/>
+  <text x="204" y="270" text-anchor="middle" fill="#6ee7b7" font-size="9.5" font-weight="600">LightGBM</text>
+  <text x="204" y="284" text-anchor="middle" fill="#a7f3d0" font-size="8.5">Q10 / Q50 / Q90</text>
+  <text x="204" y="293" text-anchor="middle" fill="#a7f3d0" font-size="8.5">Uncertainty Bands</text>
+
+  <rect x="264" y="254" width="132" height="42" rx="6" fill="#064e3b"/>
+  <text x="330" y="270" text-anchor="middle" fill="#6ee7b7" font-size="9.5" font-weight="600">IsolationForest</text>
+  <text x="330" y="284" text-anchor="middle" fill="#a7f3d0" font-size="8.5">Anomaly Detection</text>
+  <text x="330" y="293" text-anchor="middle" fill="#a7f3d0" font-size="8.5">Adaptive Contamination</text>
+
+  <!-- ML boxes row 2 -->
+  <rect x="44" y="306" width="100" height="42" rx="6" fill="#064e3b"/>
+  <text x="94" y="322" text-anchor="middle" fill="#6ee7b7" font-size="9.5" font-weight="600">SHAP</text>
+  <text x="94" y="336" text-anchor="middle" fill="#a7f3d0" font-size="8.5">TreeExplainer</text>
+  <text x="94" y="345" text-anchor="middle" fill="#a7f3d0" font-size="8.5">Root Cause Analysis</text>
+
+  <rect x="154" y="306" width="100" height="42" rx="6" fill="#064e3b"/>
+  <text x="204" y="322" text-anchor="middle" fill="#6ee7b7" font-size="9.5" font-weight="600">Scenario Engine</text>
+  <text x="204" y="336" text-anchor="middle" fill="#a7f3d0" font-size="8.5">Growth / Flat /</text>
+  <text x="204" y="345" text-anchor="middle" fill="#a7f3d0" font-size="8.5">Trend / Outlier</text>
+
+  <rect x="264" y="306" width="132" height="42" rx="6" fill="#064e3b"/>
+  <text x="330" y="322" text-anchor="middle" fill="#6ee7b7" font-size="9.5" font-weight="600">Truth Meter</text>
+  <text x="330" y="336" text-anchor="middle" fill="#a7f3d0" font-size="8.5">SMAPE vs Naïve</text>
+  <text x="330" y="345" text-anchor="middle" fill="#a7f3d0" font-size="8.5">Baseline Validation</text>
+
+  <!-- Group Forecast -->
+  <rect x="44" y="358" width="352" height="42" rx="6" fill="#064e3b"/>
+  <text x="220" y="374" text-anchor="middle" fill="#6ee7b7" font-size="9.5" font-weight="600">Group / Segment Forecasting</text>
+  <text x="220" y="390" text-anchor="middle" fill="#a7f3d0" font-size="8.5">Top-5 categorical groups run through full Prophet + LightGBM pipeline independently</text>
+
+  <!-- ── LLM LAYER ── -->
+  <rect x="430" y="220" width="280" height="195" rx="10" fill="#1c1208" stroke="#f59e0b" stroke-width="1.5" filter="url(#shadow)"/>
+  <rect x="430" y="220" width="280" height="26" rx="10" fill="url(#llmGrad)"/>
+  <rect x="430" y="234" width="280" height="12" fill="url(#llmGrad)"/>
+  <text x="570" y="238" text-anchor="middle" fill="#fefce8" font-size="11" font-weight="700" letter-spacing="1">LLM LAYER</text>
+
+  <rect x="444" y="254" width="124" height="56" rx="6" fill="#422006"/>
+  <text x="506" y="271" text-anchor="middle" fill="#fcd34d" font-size="9.5" font-weight="600">Groq</text>
+  <text x="506" y="284" text-anchor="middle" fill="#fde68a" font-size="8.5">llama-3.1-8b-instant</text>
+  <text x="506" y="296" text-anchor="middle" fill="#fde68a" font-size="8.5">Chat Intent Router</text>
+  <text x="506" y="305" text-anchor="middle" fill="#fde68a" font-size="8.5">&lt;200ms · ~80 tokens</text>
+
+  <rect x="576" y="254" width="120" height="56" rx="6" fill="#422006"/>
+  <text x="636" y="271" text-anchor="middle" fill="#fcd34d" font-size="9.5" font-weight="600">Gemini Flash</text>
+  <text x="636" y="284" text-anchor="middle" fill="#fde68a" font-size="8.5">gemini-1.5-flash</text>
+  <text x="636" y="296" text-anchor="middle" fill="#fde68a" font-size="8.5">Plain-English</text>
+  <text x="636" y="305" text-anchor="middle" fill="#fde68a" font-size="8.5">Explainer</text>
+
+  <rect x="444" y="320" width="124" height="42" rx="6" fill="#422006"/>
+  <text x="506" y="337" text-anchor="middle" fill="#fcd34d" font-size="9.5" font-weight="600">Groq (70b)</text>
+  <text x="506" y="350" text-anchor="middle" fill="#fde68a" font-size="8.5">Dataset Classifier</text>
+  <text x="506" y="359" text-anchor="middle" fill="#fde68a" font-size="8.5">+ Chart Picker</text>
+
+  <rect x="576" y="320" width="120" height="42" rx="6" fill="#422006"/>
+  <text x="636" y="337" text-anchor="middle" fill="#fcd34d" font-size="9.5" font-weight="600">Groq (70b)</text>
+  <text x="636" y="350" text-anchor="middle" fill="#fde68a" font-size="8.5">Forecast Query</text>
+  <text x="636" y="359" text-anchor="middle" fill="#fde68a" font-size="8.5">Intent Parser</text>
+
+  <!-- 10 Tools -->
+  <rect x="444" y="372" width="252" height="28" rx="6" fill="#422006"/>
+  <text x="570" y="386" text-anchor="middle" fill="#fcd34d" font-size="9.5" font-weight="600">10 Pure-Python Tool Functions</text>
+  <text x="570" y="396" text-anchor="middle" fill="#fde68a" font-size="8.5">forecast · scenario · anomaly · group · categorical · profit · correlation · stats · recommend · compare</text>
+
+  <!-- ── SQLITE ── -->
+  <rect x="730" y="220" width="148" height="195" rx="10" fill="#1f0808" stroke="#ef4444" stroke-width="1.5" filter="url(#shadow)"/>
+  <rect x="730" y="220" width="148" height="26" rx="10" fill="url(#dbGrad)"/>
+  <rect x="730" y="234" width="148" height="12" fill="url(#dbGrad)"/>
+  <text x="804" y="238" text-anchor="middle" fill="#fef2f2" font-size="11" font-weight="700" letter-spacing="1">SQLITE DB</text>
+
+  <rect x="742" y="254" width="124" height="20" rx="4" fill="#450a0a"/>
+  <text x="804" y="268" text-anchor="middle" fill="#fca5a5" font-size="9">uploads</text>
+  <rect x="742" y="278" width="124" height="20" rx="4" fill="#450a0a"/>
+  <text x="804" y="292" text-anchor="middle" fill="#fca5a5" font-size="9">forecasts</text>
+  <rect x="742" y="302" width="124" height="20" rx="4" fill="#450a0a"/>
+  <text x="804" y="316" text-anchor="middle" fill="#fca5a5" font-size="9">anomalies</text>
+  <rect x="742" y="326" width="124" height="20" rx="4" fill="#450a0a"/>
+  <text x="804" y="340" text-anchor="middle" fill="#fca5a5" font-size="9">chat_history</text>
+  <rect x="742" y="350" width="124" height="20" rx="4" fill="#450a0a"/>
+  <text x="804" y="364" text-anchor="middle" fill="#fca5a5" font-size="9">system_prompts</text>
+  <rect x="742" y="374" width="124" height="34" rx="4" fill="#450a0a"/>
+  <text x="804" y="388" text-anchor="middle" fill="#fca5a5" font-size="9">Session keyed by UUID</text>
+  <text x="804" y="401" text-anchor="middle" fill="#f87171" font-size="9">Persists across refreshes</text>
+
+  <!-- Connection lines -->
+  <!-- Frontend ↔ Backend vertical -->
+  <line x1="230" y1="165" x2="310" y2="175" stroke="#94a3b8" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#arrow)"/>
+
+  <!-- Backend → ML -->
+  <line x1="360" y1="175" x2="220" y2="220" stroke="#38bdf8" stroke-width="1.5" marker-end="url(#arrowBlue)"/>
+  <!-- Backend → LLM -->
+  <line x1="460" y1="175" x2="540" y2="220" stroke="#38bdf8" stroke-width="1.5" marker-end="url(#arrowBlue)"/>
+  <!-- Backend → SQLite -->
+  <line x1="510" y1="175" x2="760" y2="220" stroke="#38bdf8" stroke-width="1.5" marker-end="url(#arrowBlue)"/>
+
+  <!-- Legend -->
+  <rect x="30" y="462" width="840" height="58" rx="8" fill="#ffffff08" stroke="#334155" stroke-width="1"/>
+  <text x="450" y="479" text-anchor="middle" fill="#94a3b8" font-size="10" font-weight="600">TESTED ON</text>
+  <circle cx="130" cy="492" r="5" fill="#7c3aed"/>
+  <text x="142" y="496" fill="#cbd5e1" font-size="9.5">Kaggle Superstore Sales Dataset</text>
+  <circle cx="320" cy="492" r="5" fill="#10b981"/>
+  <text x="332" y="496" fill="#cbd5e1" font-size="9.5">Kaggle Avocado Prices Dataset</text>
+  <circle cx="510" cy="492" r="5" fill="#f59e0b"/>
+  <text x="522" y="496" fill="#cbd5e1" font-size="9.5">Synthetic Demo (104 weeks)</text>
+  <circle cx="680" cy="492" r="5" fill="#0ea5e9"/>
+  <text x="692" y="496" fill="#cbd5e1" font-size="9.5">Cross-sectional CSVs</text>
+  <text x="450" y="512" text-anchor="middle" fill="#64748b" font-size="9">All free-tier APIs · No credit card required · SQLite zero-infrastructure persistence</text>
+</svg>
