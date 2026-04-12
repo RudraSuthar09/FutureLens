@@ -17,7 +17,7 @@ load_dotenv()
 from api.database import (
     init_db, save_upload, save_forecast, save_anomalies, save_chat,
     get_forecast, get_anomalies, get_chat_history, get_recent_uploads,
-    save_system_prompt, get_system_prompt
+    save_system_prompt, get_system_prompt, get_recent_chat
 )
 from api.forecaster import run_forecast, detect_date_column
 from api.rca import compute_shap, explain_rca
@@ -57,6 +57,11 @@ class SimulateRequest(BaseModel):
     session_id: str
     change_percent: float
     scenario_type: str = "growth"
+
+
+class ForecastQueryRequest(BaseModel):
+    message: str
+    session_id: str = "demo"
 
 
 class NumpyEncoder(json.JSONEncoder):
@@ -259,6 +264,194 @@ def pick_group_column(df: pd.DataFrame) -> str | None:
     return None
 
 
+def _make_empty_forecast(df_work: pd.DataFrame, detected_columns: dict) -> dict:
+    sales = df_work["sales"].dropna().tolist()
+    last_val = float(sales[-1]) if sales else 0.0
+    return {
+        "dates": [], "forecast": [], "lower": [], "upper": [],
+        "historical": sales,
+        "historical_dates": df_work["date"].dt.strftime("%Y-%m-%d").tolist(),
+        "baseline": [], "model_mape": 0.0, "baseline_mape": 0.0,
+        "truth_score": 0.0, "detected_freq": "D", "forecast_horizon": 0,
+        "confidence_level": 80, "last_value": last_val,
+        "data_quality": {
+            "total_rows": len(df_work),
+            "warning": "Forecast pipeline did not run.",
+        },
+    }
+
+
+def _run_group_forecasts(df, group_col, original_date_col, original_target_col, logger):
+    try:
+        df_tmp = df[[original_date_col, original_target_col, group_col]].copy()
+        df_tmp[original_date_col] = pd.to_datetime(
+            df_tmp[original_date_col], errors="coerce", utc=False
+        )
+        df_tmp[original_target_col] = pd.to_numeric(
+            df_tmp[original_target_col]
+                .astype(str)
+                .str.replace(",", "")
+                .str.replace("\xa0", " ")
+                .str.strip(),
+            errors="coerce",
+        )
+        df_tmp = df_tmp.dropna(subset=[original_date_col, original_target_col, group_col])
+
+        top_groups = (
+            df_tmp.groupby(group_col)[original_target_col]
+            .sum().sort_values(ascending=False).head(5).index.tolist()
+        )
+
+        group_forecasts = []
+        for g in top_groups:
+            gdf = df_tmp[df_tmp[group_col] == g][
+                [original_date_col, original_target_col]
+            ].copy()
+            gdf.rename(columns={original_date_col: "date", original_target_col: "sales"}, inplace=True)
+            gdf["date"]  = pd.to_datetime(gdf["date"], errors="coerce")
+            gdf["sales"] = pd.to_numeric(gdf["sales"], errors="coerce")
+            gdf = gdf.dropna(subset=["date", "sales"])
+
+            # Resample to weekly SUM
+            gdf = (
+                gdf.set_index("date")["sales"]
+                .resample("W").sum()
+                .reset_index()
+            )
+            gdf.columns = ["date", "sales"]
+            gdf = gdf[gdf["sales"] != 0].reset_index(drop=True)
+
+            if len(gdf) < 10:
+                continue
+
+            gres      = run_forecast(gdf)
+            last_hist = float(gres["historical"][-1]) if gres.get("historical") else 0.0
+            last_fc   = float(gres["forecast"][-1])   if gres.get("forecast")   else 0.0
+            pct = (
+                (last_fc - last_hist) / abs(last_hist) * 100.0
+                if abs(last_hist) > 1e-6 else 0.0
+            )
+            pct = float(np.clip(pct, -200.0, 200.0))
+
+            group_forecasts.append({
+                "group_col":               group_col,
+                "group":                   str(g),
+                "forecast_horizon":        gres.get("forecast_horizon"),
+                "expected_change_percent": round(pct, 2),
+                "last_hist":               round(last_hist, 2),
+                "last_forecast":           round(last_fc,   2),
+            })
+
+        group_forecasts.sort(key=lambda x: x["expected_change_percent"], reverse=True)
+        return group_forecasts or None
+    except Exception as e:
+        logger.warning(f"Group forecasts skipped: {e}")
+        return None
+
+
+def _build_static_group_summary(df, group_col, target_col):
+    """For cross-sectional datasets — rank groups by mean/sum of target."""
+    try:
+        df_tmp = df[[group_col, target_col]].copy()
+        df_tmp[target_col] = pd.to_numeric(
+            df_tmp[target_col].astype(str)
+                .str.replace(",", "").str.replace("\xa0", " ").str.strip(),
+            errors="coerce",
+        )
+        df_tmp = df_tmp.dropna()
+        summary = (
+            df_tmp.groupby(group_col)[target_col]
+            .agg(["mean", "sum", "count"])
+            .reset_index().sort_values("sum", ascending=False).head(10)
+        )
+        global_mean = float(df_tmp[target_col].mean())
+        result = []
+        for _, row in summary.iterrows():
+            grp_mean = float(row["mean"])
+            pct_vs_avg = ((grp_mean - global_mean) / abs(global_mean) * 100) if global_mean else 0.0
+            result.append({
+                "group_col":               group_col,
+                "group":                   str(row[group_col]),
+                "forecast_horizon":        0,
+                "expected_change_percent": round(pct_vs_avg, 2),
+                "last_hist":               round(grp_mean, 2),
+                "last_forecast":           round(grp_mean, 2),
+                "total":                   round(float(row["sum"]), 2),
+                "count":                   int(row["count"]),
+                "is_static":               True,
+            })
+        return result or None
+    except Exception as e:
+        logger.warning(f"Static group summary failed: {e}")
+        return None
+
+
+def _safe_float(val) -> float:
+    try:
+        f = float(val)
+        return None if (f != f) else round(f, 4)
+    except Exception:
+        return None
+
+
+def _build_chart_data(df: pd.DataFrame, chart_config: dict) -> dict:
+    """Build chart-ready data for cross-sectional datasets."""
+    chart_type = chart_config.get("chart_type", "horizontal_bar")
+    x_col      = chart_config.get("x_col")
+    y_col      = chart_config.get("y_col")
+    color_col  = chart_config.get("color_col")
+    size_col   = chart_config.get("size_col")
+    top_n      = int(chart_config.get("top_n", 20))
+    sort_order = chart_config.get("sort_order", "desc")
+
+    df_tmp = df.copy()
+
+    if y_col and y_col in df_tmp.columns:
+        df_tmp[y_col] = pd.to_numeric(
+            df_tmp[y_col].astype(str)
+                .str.replace(",", "").str.replace("\xa0", " ").str.strip(),
+            errors="coerce"
+        )
+        df_tmp = df_tmp.dropna(subset=[y_col])
+
+    if y_col and y_col in df_tmp.columns and chart_type != "histogram":
+        ascending = sort_order == "asc"
+        df_tmp = df_tmp.sort_values(y_col, ascending=ascending).head(top_n)
+
+    out = {
+        "chart_type":  chart_type,
+        "chart_title": chart_config.get("chart_title", ""),
+        "x_label":     chart_config.get("x_label", x_col or ""),
+        "y_label":     chart_config.get("y_label", y_col or ""),
+        "x_col":       x_col,
+        "y_col":       y_col,
+        "color_col":   color_col,
+        "size_col":    size_col,
+        "rows":        [],
+    }
+
+    for _, row in df_tmp.iterrows():
+        entry = {}
+        if x_col and x_col in df_tmp.columns:
+            entry["x"] = str(row[x_col]) if df_tmp[x_col].dtype == object else _safe_float(row[x_col])
+        if y_col and y_col in df_tmp.columns:
+            entry["y"] = _safe_float(row[y_col])
+        if color_col and color_col in df_tmp.columns:
+            entry["color"] = str(row[color_col])
+        if size_col and size_col in df_tmp.columns:
+            entry["size"] = _safe_float(row[size_col])
+        extra_count = 0
+        for col in df_tmp.select_dtypes(include=["number"]).columns:
+            if col not in [y_col, size_col] and extra_count < 4:
+                val = _safe_float(row[col])
+                if val is not None:
+                    entry[col] = val
+                    extra_count += 1
+        out["rows"].append(entry)
+
+    return out
+
+
 def build_dataset_intelligence_card(
     df_work: pd.DataFrame,
     forecast_results: dict,
@@ -268,37 +461,54 @@ def build_dataset_intelligence_card(
 ) -> dict:
     target   = detected_columns["target"]
     raw_freq = forecast_results.get("detected_freq", "W")
-    freq_info        = _get_freq_info(raw_freq)
-    freq_label       = freq_info["label"]
+    freq_info         = _get_freq_info(raw_freq)
+    freq_label        = freq_info["label"]
     periods_per_week  = freq_info["per_week"]
     periods_per_month = freq_info["per_month"]
     horizon = forecast_results.get("forecast_horizon", 4)
 
-    hist     = forecast_results["historical"]
-    fc       = forecast_results["forecast"]
-    lo       = forecast_results["lower"]
-    hi       = forecast_results["upper"]
+    hist      = forecast_results.get("historical", [])
+    fc        = forecast_results.get("forecast",   [])
+    lo        = forecast_results.get("lower",      [])
+    hi        = forecast_results.get("upper",      [])
     last_hist = hist[-1] if hist else 0
+    has_forecast = bool(fc)
 
-    change_pct = ((fc[-1] - last_hist) / abs(last_hist) * 100) if last_hist else 0
-    lower_pct  = ((sum(lo) / len(lo) - last_hist) / abs(last_hist) * 100) if last_hist and lo else 0
-    upper_pct  = ((sum(hi) / len(hi) - last_hist) / abs(last_hist) * 100) if last_hist and hi else 0
+    if has_forecast:
+        change_pct = ((fc[-1] - last_hist) / abs(last_hist) * 100) if last_hist else 0
+        lower_pct  = ((sum(lo)/len(lo) - last_hist) / abs(last_hist) * 100) if lo and last_hist else 0
+        upper_pct  = ((sum(hi)/len(hi) - last_hist) / abs(last_hist) * 100) if hi and last_hist else 0
+    else:
+        change_pct = lower_pct = upper_pct = 0.0
+
     trend = "rising" if change_pct > 2 else ("falling" if change_pct < -2 else "stable")
 
     forecast_dates = forecast_results.get("dates", [])
-    period_lines = []
-    for i in range(min(horizon, len(forecast_dates))):
-        period_lines.append(
-            f"Period {i+1} ({forecast_dates[i]}): "
-            f"{fc[i]:.2f} [low {lo[i]:.2f} – high {hi[i]:.2f}]"
+    period_lines   = []
+    if has_forecast:
+        for i in range(min(horizon, len(forecast_dates))):
+            period_lines.append(
+                f"Period {i+1} ({forecast_dates[i]}): "
+                f"{fc[i]:.2f} [low {lo[i]:.2f} – high {hi[i]:.2f}]"
+            )
+
+    if has_forecast:
+        one_liner = (
+            f"Next {horizon} {freq_label}s: central estimate {change_pct:+.1f}% ({trend}). "
+            f"Lower bound: {lower_pct:+.1f}%. Upper bound: {upper_pct:+.1f}%."
+        )
+    else:
+        mean_val = float(np.mean(hist)) if hist else 0.0
+        min_val  = float(np.min(hist))  if hist else 0.0
+        max_val  = float(np.max(hist))  if hist else 0.0
+        one_liner = (
+            f"Cross-sectional dataset: {len(hist)} rows. "
+            f"{target} ranges from {min_val:.2f} to {max_val:.2f} "
+            f"(mean: {mean_val:.2f}). "
+            f"Use chat to explore correlations and rankings."
         )
 
-    one_liner = (
-        f"Next {horizon} {freq_label}s: central estimate {change_pct:+.1f}% ({trend}). "
-        f"Lower bound: {lower_pct:+.1f}%. Upper bound: {upper_pct:+.1f}%."
-    )
-
-    top_driver = "recent trend"
+    top_driver           = "recent trend"
     top_driver_direction = "neutral"
     if shap_results:
         top_driver           = shap_results[0].get("feature", "recent trend")
@@ -345,38 +555,38 @@ def build_dataset_intelligence_card(
         reliability_plain = "Model accuracy is close to baseline. Use forecast cautiously."
 
     return {
-        "target_col":           target,
-        "freq_label":           freq_label,
-        "detected_freq":        raw_freq,
-        "periods_per_week":     periods_per_week,
-        "periods_per_month":    periods_per_month,
-        "horizon":              horizon,
-        "one_liner":            one_liner,
-        "change_pct":           round(change_pct, 1),
-        "lower_pct":            round(lower_pct, 1),
-        "upper_pct":            round(upper_pct, 1),
-        "trend_direction":      trend,
+        "target_col":            target,
+        "freq_label":            freq_label,
+        "detected_freq":         raw_freq,
+        "periods_per_week":      periods_per_week,
+        "periods_per_month":     periods_per_month,
+        "horizon":               horizon,
+        "one_liner":             one_liner,
+        "change_pct":            round(change_pct, 1),
+        "lower_pct":             round(lower_pct,  1),
+        "upper_pct":             round(upper_pct,  1),
+        "trend_direction":       trend,
         "last_historical_value": round(last_hist, 2),
-        "forecast_dates":       forecast_dates,
-        "forecast_values":      [round(v, 2) for v in fc],
-        "lower_values":         [round(v, 2) for v in lo],
-        "upper_values":         [round(v, 2) for v in hi],
-        "period_lines":         period_lines,
-        "top_driver":           top_driver,
-        "top_driver_direction": top_driver_direction,
-        "other_columns":        other_cols,
-        "column_relationships": column_relationships,
-        "anomaly_plain":        anomaly_plain,
-        "anomaly_count":        len(anomalies),
-        "reliability_plain":    reliability_plain,
-        "truth_score":          truth_score,
+        "forecast_dates":        forecast_dates,
+        "forecast_values":       [round(v, 2) for v in fc],
+        "lower_values":          [round(v, 2) for v in lo],
+        "upper_values":          [round(v, 2) for v in hi],
+        "period_lines":          period_lines,
+        "top_driver":            top_driver,
+        "top_driver_direction":  top_driver_direction,
+        "other_columns":         other_cols,
+        "column_relationships":  column_relationships,
+        "anomaly_plain":         anomaly_plain,
+        "anomaly_count":         len(anomalies),
+        "reliability_plain":     reliability_plain,
+        "truth_score":           truth_score,
     }
 
 
 def build_compact_system_prompt(card: dict, detected_columns: dict) -> str:
-    target       = card["target_col"]
-    freq         = card["freq_label"]
-    horizon      = card["horizon"]
+    target        = card["target_col"]
+    freq          = card["freq_label"]
+    horizon       = card["horizon"]
     detected_freq = card.get("detected_freq", "W")
 
     other_col_lines = []
@@ -419,15 +629,15 @@ def build_compact_system_prompt(card: dict, detected_columns: dict) -> str:
         cross_col_formula = ""
 
     if freq == "day":
-        freq_rules = "1 week = 7 periods. 1 month = 30 periods. 'Next N weeks' means N×7 periods."
+        freq_rules = "1 week = 7 periods. 1 month = 30 periods."
     elif freq == "week":
-        freq_rules = "1 week = 1 period. 1 month = 4 periods. 'Next N months' means N×4 periods."
+        freq_rules = "1 week = 1 period. 1 month = 4 periods."
     elif freq == "month":
-        freq_rules = "1 month = 1 period. 1 quarter = 3 periods. 'Next N weeks' means N×0.25 periods (round up)."
+        freq_rules = "1 month = 1 period. 1 quarter = 3 periods."
     else:
         freq_rules = f"Data is {freq}ly. Convert user time references to periods accordingly."
 
-    periods_str = "\n".join([f"  {line}" for line in card["period_lines"]])
+    periods_str = "\n".join([f"  {line}" for line in card["period_lines"]]) or "  No forecast periods available (cross-sectional dataset)."
 
     prompt = f"""You are FutureLens, a friendly AI forecasting assistant.
 
@@ -437,8 +647,6 @@ def build_compact_system_prompt(card: dict, detected_columns: dict) -> str:
 
 [FREQUENCY CONTEXT]
 {freq_rules}
-When user says "next N weeks/months", convert N to periods using the rules above before answering.
-Always state how many periods your answer covers.
 
 [FORECAST FOR {target.upper()}]
 {card['one_liner']}
@@ -458,27 +666,17 @@ Top driver: {card['top_driver']} ({card['top_driver_direction']} impact)
 [RELIABILITY]
 {card['reliability_plain']}
 
-[MANDATORY ROUTING — follow exactly]
-WHY questions (why did X happen / what caused the drop): Use ANOMALIES data above first. State the anomaly date, severity and deviation. Then explain in plain English. Never answer WHY from general knowledge.
-WHAT WILL HAPPEN questions (next N weeks/months/forecast): Convert N to periods using FREQUENCY CONTEXT. Use exact forecast numbers from FORECAST section above. State period range explicitly.
-WHAT IF / SCENARIO questions (if X increases by N%):
-  - If question is about {target} itself: "Under a +N% scenario, {target} reaches [{card['last_historical_value']:.2f} × (1+N/100)] (vs {card['last_historical_value']:.2f} baseline). Range: [value×0.95]–[value×1.05]."
-  - If question links another column to {target}: {cross_col_formula if cross_col_formula else "Use the correlation data in COLUMN RELATIONSHIPS and explain the statistical link."}
-OTHER COLUMN questions: Use COLUMN STATISTICS above. "While my full forecast is for {target}, here is what I see for [col]: current=[last], trend=[trend]."
+[MANDATORY ROUTING]
+WHY questions: Use ANOMALIES data. State date, severity, deviation. Never answer WHY from general knowledge.
+WHAT WILL HAPPEN questions: Use exact forecast numbers. State period range explicitly.
+WHAT IF questions: {cross_col_formula if cross_col_formula else "Use correlation data and explain the statistical link."}
+OTHER COLUMN questions: Use COLUMN STATISTICS above.
 UNKNOWN questions: Never say "I cannot". State the one-liner and suggest 3 specific questions.
 
 [RESPONSE FORMAT]
-Lead with the number or direct answer. Max 4 sentences. Plain English only — no technical terms.
+Lead with the number or direct answer. Max 4 sentences. Plain English only.
 End with exactly one follow-up question suggestion.
-Never refuse when data is available above. Never use general business knowledge when specific data is provided.
 """
-
-    word_count = len(prompt.split())
-    if word_count > 700:
-        logger.warning(
-            f"System prompt is {word_count} words (target ≤700). "
-            f"Reduce other_columns count (currently {len(card['other_columns'])})."
-        )
     return prompt
 
 
@@ -501,53 +699,112 @@ async def upload_file(file: UploadFile = File(...)):
 
         dataset_profile = build_dataset_profile(df)
 
-        try:
-            original_date_col = detect_date_column(df)
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e))
+        # ── Step 1: Try to detect a real date column ──
+        original_date_col = detect_date_column(df) if _has_date_column(df) else None
+        has_real_date     = original_date_col is not None
 
-        try:
-            original_target_col = detect_target_column(df, original_date_col)
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e))
+        # ── Step 1b: Groq classifies dataset + picks chart config ──
+        groq_picked        = None
+        is_cross_sectional = False
+        chart_config       = None
 
-        num_cols = df.select_dtypes(include=["number"]).columns.tolist()
+        if not has_real_date:
+            from api.column_picker import pick_columns_with_groq
+            groq_picked = pick_columns_with_groq(dataset_profile)
+
+            actual_cols_lower = {c.lower(): c for c in df.columns}
+
+            if groq_picked.get("x_col"):
+                picked_x = groq_picked["x_col"].lower()
+                if picked_x in actual_cols_lower:
+                    groq_picked["x_col"] = actual_cols_lower[picked_x]
+                elif groq_picked["x_col"] not in df.columns:
+                    groq_picked["x_col"] = None
+
+            if groq_picked.get("y_col"):
+                picked_y = groq_picked["y_col"].lower()
+                if picked_y in actual_cols_lower:
+                    groq_picked["y_col"] = actual_cols_lower[picked_y]
+                elif groq_picked["y_col"] not in df.columns:
+                    groq_picked["y_col"] = None
+
+            is_cross_sectional = groq_picked.get("dataset_type") != "time_series"
+            chart_config       = groq_picked
+
+            logger.info(
+                f"Groq: dataset_type={groq_picked.get('dataset_type')}, "
+                f"chart={groq_picked.get('chart_type')}, "
+                f"x={groq_picked.get('x_col')}, y={groq_picked.get('y_col')}, "
+                f"color={groq_picked.get('color_col')}, reason={groq_picked.get('reason')}"
+            )
+
+        # ── Step 2: Detect target column ──
+        if groq_picked and groq_picked.get("y_col") and groq_picked["y_col"] in df.columns:
+            original_target_col = groq_picked["y_col"]
+        else:
+            try:
+                original_target_col = detect_target_column(df, original_date_col)
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e))
+
+        # ── Step 3: Feature columns ──
+        num_cols     = df.select_dtypes(include=["number"]).columns.tolist()
         feature_cols = [
             c for c in num_cols
-            if c != original_date_col and c != original_target_col
+            if c != original_date_col
+            and c != original_target_col
             and df[c].isna().sum() / len(df) <= 0.30
         ]
 
-        use_cols = [original_date_col, original_target_col] + feature_cols
-        df_work  = df[use_cols].copy()
-        df_work.rename(columns={original_date_col: "date", original_target_col: "sales"}, inplace=True)
+        # ── Step 4: Build working frame ──
+        if has_real_date:
+            use_cols = [original_date_col, original_target_col] + feature_cols
+            df_work  = df[use_cols].copy()
+            df_work.rename(columns={original_date_col: "date", original_target_col: "sales"}, inplace=True)
+            df_work["date"] = pd.to_datetime(df_work["date"], errors="coerce", utc=False)
+            df_work = df_work.dropna(subset=["date"])
+            date_was_generated = False
+            synthetic_time_col = None
 
-        df_work["date"] = pd.to_datetime(df_work["date"], errors="coerce", utc=False)
-        df_work = df_work.dropna(subset=["date"])
+        elif not is_cross_sectional:
+            # Time-series without a real date column — synthesise dates
+            groq_time_col = groq_picked.get("x_col") if groq_picked else None
+            use_cols = [original_target_col] + feature_cols
+            df_work  = df[use_cols].copy()
+            df_work.rename(columns={original_target_col: "sales"}, inplace=True)
+            if groq_time_col and groq_time_col in df.columns:
+                df_work = df_work.iloc[df[groq_time_col].argsort().values]
+            df_work = df_work.reset_index(drop=True)
+            df_work.insert(0, "date", pd.date_range(start="2020-01-01", periods=len(df_work), freq="D"))
+            original_date_col  = "_auto_generated_"
+            date_was_generated = True
+            synthetic_time_col = groq_time_col
 
+        else:
+            # Cross-sectional — synthesise placeholder dates for pipeline compatibility
+            use_cols = [original_target_col] + feature_cols
+            df_work  = df[use_cols].copy()
+            df_work.rename(columns={original_target_col: "sales"}, inplace=True)
+            df_work = df_work.reset_index(drop=True)
+            df_work.insert(0, "date", pd.date_range(start="2020-01-01", periods=len(df_work), freq="D"))
+            original_date_col  = "_cross_sectional_"
+            date_was_generated = True
+            synthetic_time_col = None
+
+        # ── Coerce numeric types ──
         df_work["sales"] = pd.to_numeric(
-            df_work["sales"].astype(str)
-                            .str.replace(",", "")
-                            .str.replace("\xa0", " ")
-                            .str.strip(),
+            df_work["sales"].astype(str).str.replace(",", "").str.replace("\xa0", " ").str.strip(),
             errors="coerce",
         )
-
         for c in feature_cols:
             if c in df_work.columns:
                 df_work[c] = pd.to_numeric(
-                    df_work[c].astype(str)
-                               .str.replace(",", "")
-                               .str.replace("\xa0", " ")
-                               .str.strip(),
+                    df_work[c].astype(str).str.replace(",", "").str.replace("\xa0", " ").str.strip(),
                     errors="coerce",
                 )
 
         df_work = df_work.dropna(subset=["sales"])
 
-        # FIX 1 — use SUM not MEAN when aggregating duplicate dates.
-        # Transactional CSVs (Superstore, retail) have many rows per day;
-        # summing gives the correct daily total, not an average of individual orders.
         agg_map = {"sales": "sum"}
         for c in feature_cols:
             if c in df_work.columns:
@@ -555,161 +812,99 @@ async def upload_file(file: UploadFile = File(...)):
 
         df_work = df_work.groupby("date", as_index=False).agg(agg_map)
         df_work = df_work.sort_values("date").reset_index(drop=True)
-
         df_work["sales"] = df_work["sales"].ffill().bfill()
         for c in feature_cols:
             if c in df_work.columns:
                 df_work[c] = df_work[c].ffill().bfill()
 
-        if len(df_work) < 20:
+        if len(df_work) < 5:
             raise HTTPException(
                 status_code=400,
-                detail="Dataset too small — need at least 20 rows after cleaning.",
+                detail="Dataset too small — need at least 5 rows after cleaning.",
             )
 
         session_id = str(uuid.uuid4())
         save_upload(session_id, file.filename, len(df_work), df_work.columns.tolist())
 
-        # Step 5 — forecast
-        forecast_results = run_forecast(df_work)
-        model = forecast_results.pop("model", None)
-        X     = forecast_results.pop("X", None)
-
-        model_mape    = forecast_results.get("model_mape",    10.0)
-        baseline_mape = forecast_results.get("baseline_mape", 20.0)
-        truth_score   = forecast_results.get("truth_score",    0.0)
-
-        # Step 6 — SHAP / RCA
-        shap_results    = []
-        rca_explanation = "No explanation provided"
-        if model is not None and X is not None:
-            shap_results    = compute_shap(model, X, X)
-            rca_explanation = explain_rca(shap_results)
-
-        # Step 7 — anomaly detection
-        anomalies = detect_anomalies(df_work, forecast_results)
-
-        # Step 8 — truth meter
-        truth_meter = compute_truth_meter(model_mape, baseline_mape)
-        forecast_results["truth_score"] = truth_meter.get("score", truth_score)
-
-        # Step 8.5 — group forecasts
-        # FIX 2 — resample each group to weekly SUM before forecasting.
-        # Previously used daily mean which produced tiny last_hist values
-        # (e.g. 3.46) causing nonsensical ±500% change estimates.
-        group_forecasts = None
-        group_col = pick_group_column(df)
-
-        if group_col:
-            try:
-                df_tmp = df[[original_date_col, original_target_col, group_col]].copy()
-                df_tmp[original_date_col] = pd.to_datetime(
-                    df_tmp[original_date_col], errors="coerce", utc=False
-                )
-                df_tmp[original_target_col] = pd.to_numeric(
-                    df_tmp[original_target_col]
-                        .astype(str)
-                        .str.replace(",", "")
-                        .str.replace("\xa0", " ")
-                        .str.strip(),
-                    errors="coerce",
-                )
-                df_tmp = df_tmp.dropna(
-                    subset=[original_date_col, original_target_col, group_col]
-                )
-
-                top_groups = (
-                    df_tmp.groupby(group_col)[original_target_col]
-                    .sum()
-                    .sort_values(ascending=False)
-                    .head(5)
-                    .index
-                    .tolist()
-                )
-
-                group_forecasts = []
-                for g in top_groups:
-                    gdf = df_tmp[df_tmp[group_col] == g][
-                        [original_date_col, original_target_col]
-                    ].copy()
-                    gdf.rename(
-                        columns={
-                            original_date_col:    "date",
-                            original_target_col:  "sales",
-                        },
-                        inplace=True,
-                    )
-                    gdf["date"]  = pd.to_datetime(gdf["date"], errors="coerce")
-                    gdf["sales"] = pd.to_numeric(gdf["sales"], errors="coerce")
-                    gdf = gdf.dropna(subset=["date", "sales"])
-
-                    # Resample to weekly SUM — matches main forecast pipeline
-                    gdf = (
-                        gdf.set_index("date")["sales"]
-                        .resample("W")
-                        .sum()
-                        .reset_index()
-                    )
-                    gdf.columns = ["date", "sales"]
-                    gdf = gdf[gdf["sales"] != 0].reset_index(drop=True)
-
-                    if len(gdf) < 10:
-                        continue
-
-                    gres      = run_forecast(gdf)
-                    last_hist = float(gres["historical"][-1]) if gres.get("historical") else 0.0
-                    last_fc   = float(gres["forecast"][-1])   if gres.get("forecast")   else 0.0
-                    pct = (
-                        (last_fc - last_hist) / abs(last_hist) * 100.0
-                        if abs(last_hist) > 1e-6 else 0.0
-                    )
-                    # Cap at ±200%: anything beyond is a data artefact
-                    pct = float(np.clip(pct, -200.0, 200.0))
-
-                    group_forecasts.append({
-                        "group_col":              group_col,
-                        "group":                  str(g),
-                        "forecast_horizon":       gres.get("forecast_horizon"),
-                        "expected_change_percent": round(pct, 2),
-                        "last_hist":              round(last_hist, 2),
-                        "last_forecast":          round(last_fc,   2),
-                    })
-
-                group_forecasts.sort(
-                    key=lambda x: x["expected_change_percent"], reverse=True
-                )
-            except Exception as e:
-                logger.warning(f"Group forecasts skipped: {e}")
-                group_forecasts = None
-
-        # Step 9 — assemble
-        forecast_results["truth_meter"]      = truth_meter
-        forecast_results["session_id"]       = session_id
-        forecast_results["anomalies"]        = anomalies
-        forecast_results["shap_results"]     = shap_results
-        forecast_results["rca_explanation"]  = rca_explanation
-        forecast_results["detected_columns"] = {
-            "date":     original_date_col,
-            "target":   original_target_col,
-            "features": feature_cols,
+        detected_columns = {
+            "date":               original_date_col,
+            "target":             original_target_col,
+            "features":           feature_cols,
+            "has_date":           has_real_date,
+            "date_was_generated": date_was_generated,
+            "synthetic_time_col": synthetic_time_col,
+            "groq_reason":        groq_picked.get("reason", "") if groq_picked else "",
+            "chart_config":       chart_config,
         }
-        forecast_results["dataset_profile"]  = dataset_profile
-        forecast_results["group_forecasts"]  = group_forecasts
+
+        # ── Step 5: Forecast or chart data ──
+        forecast_results = _make_empty_forecast(df_work, detected_columns)
+        shap_results     = []
+        rca_explanation  = "No explanation available."
+        anomalies        = []
+        truth_meter      = {"status": "ok", "score": 0, "color": "gray", "label": "No forecast"}
+        group_forecasts  = None
+        chart_data       = None
+
+        if is_cross_sectional:
+            logger.info(f"Cross-sectional — building {chart_config.get('chart_type')} chart")
+            chart_data = _build_chart_data(df, chart_config)
+            truth_meter["label"] = "Cross-sectional snapshot — no forecast available"
+
+        else:
+            try:
+                forecast_results = run_forecast(df_work)
+                model = forecast_results.pop("model", None)
+                X     = forecast_results.pop("X",     None)
+
+                model_mape    = forecast_results.get("model_mape",    10.0)
+                baseline_mape = forecast_results.get("baseline_mape", 20.0)
+                truth_score   = forecast_results.get("truth_score",    0.0)
+
+                if model is not None and X is not None:
+                    shap_results    = compute_shap(model, X, X)
+                    rca_explanation = explain_rca(shap_results)
+
+                anomalies   = detect_anomalies(df_work, forecast_results)
+                truth_meter = compute_truth_meter(model_mape, baseline_mape)
+                forecast_results["truth_score"] = truth_meter.get("score", truth_score)
+
+                if date_was_generated:
+                    truth_meter["label"] = "Synthetic time axis — directional only"
+
+            except Exception as e:
+                logger.error(f"Forecast pipeline error: {e}", exc_info=True)
+                forecast_results = _make_empty_forecast(df_work, detected_columns)
+
+            # Group forecasts
+            group_col = pick_group_column(df)
+            if group_col and has_real_date:
+                group_forecasts = _run_group_forecasts(
+                    df, group_col, original_date_col, original_target_col, logger
+                )
+            elif group_col:
+                group_forecasts = _build_static_group_summary(df, group_col, original_target_col)
+
+        # ── Assemble response ──
+        forecast_results["chart_data"]         = chart_data
+        forecast_results["chart_config"]       = chart_config
+        forecast_results["is_cross_sectional"] = is_cross_sectional
+        forecast_results["truth_meter"]        = truth_meter
+        forecast_results["session_id"]         = session_id
+        forecast_results["anomalies"]          = anomalies
+        forecast_results["shap_results"]       = shap_results
+        forecast_results["rca_explanation"]    = rca_explanation
+        forecast_results["detected_columns"]   = detected_columns
+        forecast_results["dataset_profile"]    = dataset_profile
+        forecast_results["group_forecasts"]    = group_forecasts
+        forecast_results["has_date"]           = has_real_date
 
         sanitized_results = _sanitize_for_json(forecast_results)
 
-        save_forecast(
-            session_id,
-            sanitized_results,
-            sanitized_results.get("truth_score", truth_score),
-        )
+        save_forecast(session_id, sanitized_results, sanitized_results.get("truth_score", 0))
         save_anomalies(session_id, sanitized_results["anomalies"])
 
-        detected_columns = {
-            "date":     original_date_col,
-            "target":   original_target_col,
-            "features": feature_cols,
-        }
+        # ── Intelligence card + system prompt ──
         intelligence_card = build_dataset_intelligence_card(
             df_work          = df_work,
             forecast_results = sanitized_results,
@@ -717,30 +912,54 @@ async def upload_file(file: UploadFile = File(...)):
             detected_columns = detected_columns,
             shap_results     = shap_results,
         )
+        intelligence_card["has_date"]           = has_real_date
+        intelligence_card["date_was_generated"] = date_was_generated
+        intelligence_card["synthetic_time_col"] = synthetic_time_col
+        intelligence_card["groq_reason"]        = detected_columns.get("groq_reason", "")
+        intelligence_card["chart_config"]       = chart_config
+
         system_prompt = build_compact_system_prompt(
             card             = intelligence_card,
             detected_columns = detected_columns,
         )
         save_system_prompt(
-            session_id     = session_id,
-            system_prompt  = system_prompt,
+            session_id        = session_id,
+            system_prompt     = system_prompt,
             intelligence_card = intelligence_card,
         )
 
         sanitized_results["intelligence_card"] = {
-            "one_liner":        intelligence_card["one_liner"],
-            "anomaly_plain":    intelligence_card["anomaly_plain"],
-            "reliability_plain": intelligence_card["reliability_plain"],
-            "target_col":       intelligence_card["target_col"],
-            "freq_label":       intelligence_card["freq_label"],
+            "one_liner":          intelligence_card.get("one_liner", ""),
+            "anomaly_plain":      intelligence_card.get("anomaly_plain", ""),
+            "reliability_plain":  intelligence_card.get("reliability_plain", ""),
+            "target_col":         intelligence_card["target_col"],
+            "freq_label":         intelligence_card.get("freq_label", "row"),
+            "has_date":           has_real_date,
+            "date_was_generated": date_was_generated,
+            "synthetic_time_col": synthetic_time_col,
+            "groq_reason":        detected_columns.get("groq_reason", ""),
+            "chart_config":       chart_config,
+            "is_cross_sectional": is_cross_sectional,
+            "chart_type":         chart_config.get("chart_type") if chart_config else "forecast",
+            "chart_title":        chart_config.get("chart_title", "") if chart_config else "",
         }
+
         return sanitized_results
 
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error processing upload: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Internal server error. Check server logs.")
+        raise HTTPException(status_code=500, detail="Internal server error. Check server logs for details.")
+
+
+def _has_date_column(df: pd.DataFrame) -> bool:
+    """Quick check: does this DataFrame likely have a real date column?"""
+    try:
+        detect_date_column(df)
+        return True
+    except ValueError:
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -795,44 +1014,50 @@ async def chat_endpoint(request: Request):
     prompt_data = get_system_prompt(session_id)
     if not prompt_data:
         return {
-            "response": "Please upload a dataset first to enable the chat assistant.",
+            "response":           "Please upload a dataset first to enable the chat assistant.",
             "suggested_questions": [],
         }
 
-    card           = prompt_data["intelligence_card"]
-    forecast_data  = get_forecast(session_id) or {}
-    anomalies_data = get_anomalies(session_id) or []
+    card            = prompt_data["intelligence_card"]
+    forecast_data   = get_forecast(session_id) or {}
+    anomalies_data  = get_anomalies(session_id) or []
     group_forecasts = forecast_data.get("group_forecasts") or []
 
-    # Step 1 — planner picks the tool
-    tool_call = plan(message, card)
-    logger.info(f"Tool planned: {tool_call}")
+    try:
+        recent_chat = get_recent_chat(session_id, limit=4)
+    except Exception:
+        recent_chat = []
 
-    # Step 2 — Python executes the tool (no LLM involved)
+    # Step 1 — plan
+    tool_call = plan(message, card)
+    logger.info(f"Tool call planned: {tool_call}")
+
+    # Step 2 — execute
     tool_result = execute_tool(
-        tool_call      = tool_call,
-        card           = card,
-        forecast_data  = forecast_data,
-        anomalies_data = anomalies_data,
+        tool_call       = tool_call,
+        card            = card,
+        forecast_data   = forecast_data,
+        anomalies_data  = anomalies_data,
         group_forecasts = group_forecasts,
     )
     logger.info(f"Tool result: {tool_result.get('tool')} — keys: {list(tool_result.keys())}")
 
-    # Step 3 — Gemini explains the tool result in plain English
+    # Step 3 — explain
     rate_limited = False
     try:
         response_text = explain(
             user_message = message,
             tool_result  = tool_result,
             card         = card,
+            chat_history = recent_chat,
         )
         if "rate" in response_text.lower() and "limit" in response_text.lower():
             rate_limited = True
     except Exception as e:
         err_str = str(e).lower()
         if "429" in str(e) or "quota" in err_str or "rate" in err_str:
-            rate_limited    = True
-            response_text   = _build_rate_limit_fallback(tool_result, card)
+            rate_limited  = True
+            response_text = _build_rate_limit_fallback(tool_result, card)
         else:
             logger.error(f"Explain error: {e}")
             response_text = "I encountered an error. Please try again."
@@ -841,18 +1066,11 @@ async def chat_endpoint(request: Request):
         cut = response_text.find("\n\n", 400)
         response_text = response_text[:cut] if cut > 0 else response_text[:700]
 
-    # FIX 3 — chart_context: tells the frontend what to highlight / render inline.
-    # Detects horizon requests ("next 3 weeks") and group/segment questions.
     chart_context = _build_chart_context(message, card)
 
-    # Suggested follow-up questions (dynamic, not hardcoded)
     target    = card.get("target_col", "your metric")
     freq      = card.get("freq_label", "week")
-    corr_cols = list(
-        card.get("column_relationships", {})
-            .get("correlations_with_target", {})
-            .keys()
-    )
+    corr_cols = list(card.get("column_relationships", {}).get("correlations_with_target", {}).keys())
     suggested = [
         f"What will {target} look like next {freq}?",
         "Are there any sudden changes I should look at?",
@@ -862,27 +1080,19 @@ async def chat_endpoint(request: Request):
         ),
     ]
 
-    save_chat(session_id, message, response_text[:250])
+    save_chat(session_id, message, response_text[:400])
 
     return {
-        "response":           response_text,
+        "response":            response_text,
         "suggested_questions": suggested,
-        "rate_limited":       rate_limited,
-        "chart_context":      chart_context,   # consumed by app.py for inline charts
-        "debug_tool":         tool_call.get("tool"),
+        "rate_limited":        rate_limited,
+        "chart_context":       chart_context,
+        "debug_tool":          tool_call.get("tool"),
     }
 
 
 def _build_chart_context(message: str, card: dict) -> dict | None:
-    """
-    Parses the user message to produce a chart_context dict that app.py
-    uses to render an inline mini-chart in the chat panel.
-
-    Returns None when no chart update is warranted.
-    """
-    msg_lower = message.lower()
-
-    # Detect explicit time horizon ("next 3 weeks", "next 2 months", etc.)
+    msg_lower     = message.lower()
     horizon_match = re.search(r"(\d+)\s*(week|month|day)", msg_lower)
     if horizon_match and any(
         k in msg_lower for k in ["next", "forecast", "predict", "look like", "future", "will"]
@@ -900,7 +1110,6 @@ def _build_chart_context(message: str, card: dict) -> dict | None:
             "label":   f"Next {n} {unit}{'s' if n > 1 else ''}",
         }
 
-    # Detect group/segment keyword
     group_keywords = [
         "region", "segment", "category", "product",
         "west", "east", "south", "central", "north",
@@ -908,16 +1117,12 @@ def _build_chart_context(message: str, card: dict) -> dict | None:
     ]
     for kw in group_keywords:
         if kw in msg_lower:
-            return {
-                "type":    "highlight_group",
-                "keyword": kw,
-            }
+            return {"type": "highlight_group", "keyword": kw}
 
     return None
 
 
 def _build_rate_limit_fallback(tool_result: dict, card: dict) -> str:
-    """Template answer using real tool-result numbers — never leaks system prompt."""
     tool   = tool_result.get("tool", "none")
     target = card.get("target_col", "metric")
     freq   = card.get("freq_label", "period")
@@ -929,8 +1134,7 @@ def _build_rate_limit_fallback(tool_result: dict, card: dict) -> str:
             p = periods[0]
             return (
                 f"{target} forecast: {p['forecast']:.2f} next {freq} "
-                f"(range {p['lower']:.2f}–{p['upper']:.2f}). "
-                f"Overall change: {chg:+.1f}%."
+                f"(range {p['lower']:.2f}–{p['upper']:.2f}). Overall change: {chg:+.1f}%."
             )
     if tool == "categorical_analysis":
         groups = tool_result.get("ranked_groups", [])
@@ -939,8 +1143,7 @@ def _build_rate_limit_fallback(tool_result: dict, card: dict) -> str:
             return (
                 f"Top {tool_result.get('group_column','segment')} by "
                 f"{tool_result.get('rank_by','volume')}: {top['group']} "
-                f"(forecast: {top['forecast_value']:.2f}, "
-                f"growth: {top['expected_change_pct']:+.1f}%)."
+                f"(forecast: {top['forecast_value']:.2f}, growth: {top['expected_change_pct']:+.1f}%)."
             )
     if tool == "profitability":
         gp = tool_result.get("group_profit_ranking", [])
@@ -948,8 +1151,7 @@ def _build_rate_limit_fallback(tool_result: dict, card: dict) -> str:
             top = gp[0]
             return (
                 f"Most profitable {top['group_col']}: {top['group']} "
-                f"(current: {top['current']:.2f}, "
-                f"forecast: {top['forecast']:.2f}, "
+                f"(current: {top['current']:.2f}, forecast: {top['forecast']:.2f}, "
                 f"growth: {top['growth_pct']:+.1f}%)."
             )
     if tool == "scenario":
@@ -958,43 +1160,33 @@ def _build_rate_limit_fallback(tool_result: dict, card: dict) -> str:
             f"Scenario total: {tool_result.get('scenario_total', 0):.2f} "
             f"vs baseline {tool_result.get('baseline_total', 0):.2f}."
         )
-
     return card.get("one_liner", "Data loaded. Please try again in a moment.")
 
-from pydantic import BaseModel
- 
-class ForecastQueryRequest(BaseModel):
-    message:    str
-    session_id: str = "demo"
- 
- 
+
+# ---------------------------------------------------------------------------
+# FORECAST QUERY ENDPOINT
+# ---------------------------------------------------------------------------
+
 @app.post("/forecast_query")
 async def forecast_query_endpoint(req: ForecastQueryRequest):
-    """
-    Groq reads the user's message and returns a structured forecast_update
-    telling the frontend how to update the Forecast tab chart.
- 
-    Completely independent of the chat endpoint.
-    Returns {"forecast_update": {...}} or {"forecast_update": null}.
-    """
     from api.forecast_query import detect_forecast_intent
- 
+
     if not req.message.strip():
         return {"forecast_update": None}
- 
+
     prompt_data = get_system_prompt(req.session_id)
     if not prompt_data:
         return {"forecast_update": None}
- 
+
     card = prompt_data["intelligence_card"]
- 
     try:
         forecast_update = detect_forecast_intent(req.message, card)
         return {"forecast_update": forecast_update}
     except Exception as e:
         logger.warning(f"forecast_query error: {e}")
         return {"forecast_update": None}
- 
+
+
 # ---------------------------------------------------------------------------
 # SIMULATE ENDPOINT
 # ---------------------------------------------------------------------------

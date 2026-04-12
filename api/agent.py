@@ -19,6 +19,8 @@ You will receive:
 
 Your job: explain the JSON result in plain English. Rules:
 - Lead with the KEY NUMBER or direct answer in sentence 1
+- Give a complete answer.
+- Use 4 to 8 sentences when needed.
 - Keep answer within 4 to 5 short lines.
 - Answer must be fully complete.
 - Never stop mid-sentence.
@@ -28,11 +30,15 @@ Your job: explain the JSON result in plain English. Rules:
 - Start with the direct answer or key number.
 - Mention important drivers/reasons if available.
 - If the question asks for recommendation, explain reasoning clearly.
+- Never cut off mid-sentence.
 - For anomaly questions: explain what changed, likely drivers only if present in JSON, and suggest one next step.
 - Never invent causes. Only mention drivers explicitly present in the JSON result.
 - No technical jargon (no "MAPE", "conformal", "SHAP", "correlation coefficient")
-- If cross_column_impact exists, mention it with "Note: this is a statistical estimate, not guaranteed"
-- Never say "I don't know" if data is in the JSON"""
+- If cross_column_impact exists, always mention it with: "Note: this is a statistical estimate based on correlation, not a guaranteed outcome."
+- For scenario results with is_cross_sectional=true: explain using estimated_target_change_pct and estimated_new_value. Always add the correlation-based disclaimer.
+- For scenario results with a note field: include the note in your explanation naturally.
+- End with exactly ONE follow-up question the user might want to ask next.
+- Never say "I don't know" if data is in the JSON."""
 
 
 def _pick_model() -> str:
@@ -52,31 +58,30 @@ def _pick_model() -> str:
 MODEL_NAME = os.environ.get("GEMINI_MODEL") or _pick_model()
 
 
-def explain(user_message: str, tool_result: dict, card: dict,chat_history=None) -> str:
+def explain(user_message: str, tool_result: dict, card: dict, chat_history=None) -> str:
     """
     Gemini explains a pre-computed tool result.
     Token cost: ~300 tokens in, ~150 tokens out.
-    Much cheaper than the old full-context approach.
     """
     if not GEMINI_API_KEY or GEMINI_API_KEY == "your_gemini_api_key_here":
         return _safe_fallback(tool_result, card, user_message)
 
-    # Build a compact explainer prompt
     tool_name = tool_result.get("tool", "none")
-    result_str = json.dumps(tool_result, indent=None)  # Compact JSON, no pretty-print
+    result_str = json.dumps(tool_result, indent=None)
 
-    # Hard limit: never send more than 800 chars of tool result to Gemini
+    # Hard limit: trim to most important fields if too long
     if len(result_str) > 2000:
-        # Keep the most important fields
         important_keys = ["tool", "target", "overall_change_pct", "trend", "period_data",
                           "difference_percent", "scenario_total", "baseline_total",
                           "count", "recommendations", "one_liner", "error",
-                          "cross_column_impact", "better_performing", "difference_pct"]
+                          "cross_column_impact", "better_performing", "difference_pct",
+                          "estimated_target_change_pct", "estimated_new_value",
+                          "baseline_value", "input_column", "correlation",
+                          "is_cross_sectional", "note", "message", "suggestion"]
         trimmed = {k: tool_result[k] for k in important_keys if k in tool_result}
         result_str = json.dumps(trimmed, indent=None)
 
     history_text = ""
-
     if chat_history:
         history_lines = []
         for row in chat_history:
@@ -97,7 +102,7 @@ def explain(user_message: str, tool_result: dict, card: dict,chat_history=None) 
     )
 
     generation_config = genai.types.GenerationConfig(
-        max_output_tokens=1500,   # Short answer — 4 sentences max
+        max_output_tokens=1500,
         temperature=0.2,
         top_p=0.85,
     )
@@ -111,6 +116,7 @@ def explain(user_message: str, tool_result: dict, card: dict,chat_history=None) 
             )
             text = getattr(response, "text", "") or ""
             text = text.strip()
+
             bad_endings = (
                 "by the end of", "increase to", "decrease to",
                 "from", "vs", "because", "due to", "expected to"
@@ -144,6 +150,13 @@ def _safe_fallback(tool_result: dict, card: dict, message: str) -> str:
     target = card.get("target_col", "metric")
     freq = card.get("freq_label", "period")
 
+    # Handle cross-sectional "no forecast" gracefully
+    if tool == "forecast" and tool_result.get("error") == "no_forecast":
+        return (
+            f"{tool_result.get('message', '')} "
+            f"{tool_result.get('suggestion', '')}"
+        )
+
     if tool == "forecast":
         periods = tool_result.get("period_data", [])
         chg = tool_result.get("overall_change_pct", 0)
@@ -163,6 +176,32 @@ def _safe_fallback(tool_result: dict, card: dict, message: str) -> str:
         scen_total = tool_result.get("scenario_total", 0)
         base_total = tool_result.get("baseline_total", 0)
         cross = tool_result.get("cross_column_impact")
+        input_col = tool_result.get("input_column")
+
+        # Cross-sectional correlation-based scenario
+        if tool_result.get("is_cross_sectional") and input_col:
+            corr = tool_result.get("correlation", 0)
+            est_pct = tool_result.get("estimated_target_change_pct", diff)
+            est_val = tool_result.get("estimated_new_value", scen_total)
+            change_pct = tool_result.get("change_percent", 0)
+            return (
+                f"Based on the statistical link between {input_col} and {target} "
+                f"(correlation: {corr:+.2f}), a {change_pct:.0f}% increase in {input_col} "
+                f"is estimated to change {target} by {est_pct:+.1f}%, "
+                f"bringing it to approximately {est_val:.2f} from {base_total:.2f}. "
+                f"Note: this is a statistical estimate based on correlation, not a guaranteed outcome. "
+                f"Would you like to explore another scenario?"
+            )
+
+        # Direct target scenario (cross-sectional, no correlation match)
+        if tool_result.get("is_cross_sectional"):
+            note = tool_result.get("note", "")
+            return (
+                f"{note} "
+                f"Would you like to explore the correlation drivers of {target} instead?"
+            )
+
+        # Time-series scenario
         base_text = (
             f"Under this scenario, {target} is projected at {scen_total:.2f} "
             f"vs baseline {base_total:.2f} ({diff:+.1f}% difference). "
@@ -172,19 +211,16 @@ def _safe_fallback(tool_result: dict, card: dict, message: str) -> str:
                 f"Note: this is a statistical estimate based on a {cross['correlation']:+.2f} "
                 f"correlation — not a guarantee. "
             )
-        base_text += f"Would you like to compare this with a flat or trend-based scenario?"
+        base_text += "Would you like to compare this with a flat or trend-based scenario?"
         return base_text
 
     if tool == "anomaly":
         msg = tool_result.get("anomaly_plain", "An unusual change was detected.")
         drivers = tool_result.get("possible_drivers", [])
-        
         reply = msg
-
         if drivers:
             reply += " Potential drivers: " + ", ".join(drivers[:2]) + "."
-        
-        reply += f" Suggested next step: investigate affected region/system logs and compare with recent trends."
+        reply += " Suggested next step: investigate affected region/system logs and compare with recent trends."
         return reply
 
     if tool == "recommendation":
