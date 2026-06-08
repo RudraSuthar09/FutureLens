@@ -1,5 +1,9 @@
 # api/tools.py
 import logging
+import re
+import numpy as np
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
 from api.simulator import simulate_scenario
 
 logger = logging.getLogger(__name__)
@@ -17,19 +21,17 @@ def forecast_tool(card: dict, args: dict) -> dict:
     if not fc:
         hist = card.get("last_historical_value", 0)
         one_liner = card.get("one_liner", "")
+        target_mean = card.get("last_historical_value", 0)
         return {
             "tool": "forecast",
             "error": "no_forecast",
             "target": target,
             "message": (
-                f"This is a cross-sectional dataset — each row is an entity, "
-                f"not a time point, so time-series forecasting does not apply. "
+                f"No chronological time axis is available for time-series forecasting in this dataset. "
+                f"Current {target} reference value is {target_mean:.2f}. "
                 f"{one_liner}"
             ),
-            "suggestion": (
-                f"Instead, try asking: 'Which {target} is highest?', "
-                f"'What drives {target}?', or 'Show me correlations.'"
-            ),
+            "suggestion": "I can still answer ranking, correlation, and what-if questions from this dataset.",
         }
 
     periods = int(args.get("periods", card.get("horizon", 4)))
@@ -515,10 +517,157 @@ def execute_tool(tool_call: dict, card: dict, forecast_data: dict,
         return recommendation_tool(card, args)
     elif tool_name == "compare":
         return compare_tool(card, group_forecasts, args)
+    elif tool_name == "semantic_qa":
+        return semantic_qa_tool(card, forecast_data, args)
     else:
+        return semantic_qa_tool(card, forecast_data, {"question": args.get("question", "")})
+
+
+def _build_semantic_facts(card: dict, forecast_data: dict) -> list[str]:
+    target = card.get("target_col", "target")
+    facts = []
+
+    one_liner = card.get("one_liner", "")
+    if one_liner:
+        facts.append(one_liner)
+
+    profile = forecast_data.get("dataset_profile", {}) or {}
+    numeric_summary = profile.get("numeric_summary", {})
+    categorical_summary = profile.get("categorical_summary", {})
+
+    for col, stats in numeric_summary.items():
+        facts.append(
+            f"Numeric column {col}: mean {stats.get('mean', 0):.2f}, "
+            f"min {stats.get('min', 0):.2f}, max {stats.get('max', 0):.2f}, "
+            f"std {stats.get('std', 0):.2f}."
+        )
+
+    for col, values in categorical_summary.items():
+        top = ", ".join([f"{v.get('value')} ({v.get('count')})" for v in values[:5]])
+        if top:
+            facts.append(f"Categorical column {col}: top values are {top}.")
+
+    rel = card.get("column_relationships", {})
+    for col, corr in rel.get("correlations_with_target", {}).items():
+        direction = "positive" if corr >= 0 else "negative"
+        facts.append(f"{col} has {direction} relationship with {target}: correlation {corr:+.2f}.")
+
+    groups = forecast_data.get("group_forecasts") or []
+    for g in groups[:10]:
+        facts.append(
+            f"Group {g.get('group')} has current value {float(g.get('last_hist', 0)):.2f}, "
+            f"forecast {float(g.get('last_forecast', 0)):.2f}, expected change {float(g.get('expected_change_percent', 0)):+.1f}%"
+        )
+
+    if not facts:
+        facts.append("No detailed dataset facts are available. Use the summary insight.")
+
+    return facts
+
+
+def _extract_requested_numeric_column(question: str, numeric_summary: dict, target: str) -> str:
+    q = (question or "").lower()
+    for col in numeric_summary.keys():
+        if col.lower() in q:
+            return col
+    return target if target in numeric_summary else (next(iter(numeric_summary.keys()), target))
+
+
+def semantic_qa_tool(card: dict, forecast_data: dict, args: dict) -> dict:
+    """Answer general dataset questions using lightweight text embeddings over dataset facts."""
+    question = (args.get("question") or "").strip()
+    target = card.get("target_col", "target")
+    profile = forecast_data.get("dataset_profile", {}) or {}
+    numeric_summary = profile.get("numeric_summary", {}) or {}
+    group_forecasts = forecast_data.get("group_forecasts") or []
+
+    # Deterministic shortcuts for common numeric questions.
+    ql = question.lower()
+    col = _extract_requested_numeric_column(question, numeric_summary, target)
+    if col in numeric_summary:
+        stats = numeric_summary[col]
+        if re.search(r"\b(forecast|predict|next|future)\b", ql):
+            mean_val = float(stats.get("mean", 0))
+            std_val = float(stats.get("std", 0))
+            low = max(float(stats.get("min", 0)), mean_val - std_val)
+            high = min(float(stats.get("max", 0)), mean_val + std_val)
+            return {
+                "tool": "semantic_qa",
+                "question": question,
+                "direct_answer": (
+                    f"A directional estimate for {col} over the next few periods is centered near {mean_val:.2f}, "
+                    f"with a typical range around {low:.2f} to {high:.2f}."
+                ),
+                "supporting_facts": [
+                    f"This estimate is based on observed distribution, not a strict time-series forecast.",
+                    f"Observed {col} min/max are {float(stats.get('min', 0)):.2f}/{float(stats.get('max', 0)):.2f}.",
+                ],
+            }
+        if re.search(r"\b(highest|max|maximum|top)\b", ql):
+            return {
+                "tool": "semantic_qa",
+                "question": question,
+                "direct_answer": f"Highest observed {col} is {float(stats.get('max', 0)):.2f}.",
+                "supporting_facts": [
+                    f"{col} max is {float(stats.get('max', 0)):.2f}.",
+                    f"{col} mean is {float(stats.get('mean', 0)):.2f}.",
+                ],
+            }
+        if re.search(r"\b(lowest|min|minimum|bottom)\b", ql):
+            return {
+                "tool": "semantic_qa",
+                "question": question,
+                "direct_answer": f"Lowest observed {col} is {float(stats.get('min', 0)):.2f}.",
+                "supporting_facts": [
+                    f"{col} min is {float(stats.get('min', 0)):.2f}.",
+                    f"{col} mean is {float(stats.get('mean', 0)):.2f}.",
+                ],
+            }
+        if re.search(r"\b(avg|average|mean)\b", ql):
+            return {
+                "tool": "semantic_qa",
+                "question": question,
+                "direct_answer": f"Average {col} is {float(stats.get('mean', 0)):.2f}.",
+                "supporting_facts": [
+                    f"{col} mean is {float(stats.get('mean', 0)):.2f}.",
+                    f"{col} range is {float(stats.get('min', 0)):.2f} to {float(stats.get('max', 0)):.2f}.",
+                ],
+            }
+
+    if group_forecasts and re.search(r"\b(best|top|highest|rank|ranking)\b", ql):
+        ranked = sorted(group_forecasts, key=lambda x: float(x.get("last_forecast", 0)), reverse=True)
+        top = ranked[0]
         return {
-            "tool": "none",
-            "one_liner": card.get("one_liner", ""),
-            "anomaly_plain": card.get("anomaly_plain", ""),
-            "target": card.get("target_col", "target"),
+            "tool": "semantic_qa",
+            "question": question,
+            "direct_answer": (
+                f"Top {top.get('group_col', 'group')} is {top.get('group')} with "
+                f"forecast value {float(top.get('last_forecast', 0)):.2f}."
+            ),
+            "supporting_facts": [
+                f"Current value: {float(top.get('last_hist', 0)):.2f}.",
+                f"Expected change: {float(top.get('expected_change_percent', 0)):+.1f}%.",
+            ],
         }
+
+    # Embedding-based retrieval for free-form questions.
+    facts = _build_semantic_facts(card, forecast_data)
+    if question:
+        corpus = facts + [question]
+        vec = TfidfVectorizer(ngram_range=(1, 2), stop_words="english")
+        mat = vec.fit_transform(corpus)
+        sims = cosine_similarity(mat[-1], mat[:-1]).ravel()
+        top_idx = np.argsort(-sims)[:3]
+        top_facts = [facts[i] for i in top_idx if sims[i] > 0]
+    else:
+        top_facts = facts[:3]
+
+    if not top_facts:
+        top_facts = facts[:2]
+
+    return {
+        "tool": "semantic_qa",
+        "question": question,
+        "direct_answer": top_facts[0],
+        "supporting_facts": top_facts,
+    }

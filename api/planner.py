@@ -24,6 +24,7 @@ Tools:
 - column_stats: stats about a specific column (trend, current value, average). Args: {"column": str}
 - recommendation: optimization advice, best strategy, what to improve. Args: {"question_context": str}
 - compare: compare exactly two named groups side by side. Args: {"group_a": str, "group_b": str}
+- semantic_qa: answer general data questions from dataset facts. Args: {"question": str}
 - none: greeting or cannot determine. Args: {}
 
 CRITICAL RULES:
@@ -127,6 +128,13 @@ def _fallback_planner(message: str, card: dict) -> dict:
        not any(k in msg for k in ["forecast", "predict", "next"]):
         return {"tool": "compare", "args": {"group_a": "", "group_b": ""}}
 
+    # General data exploration questions
+    if any(k in msg for k in [
+        "highest", "lowest", "max", "min", "average", "mean", "median",
+        "top", "bottom", "which", "show", "list", "summary", "describe"
+    ]):
+        return {"tool": "semantic_qa", "args": {"question": message}}
+
     # Column stats
     for col in other_cols:
         if col.lower() in msg and any(k in msg for k in ["what is", "tell me", "show", "average", "how is", "trend"]):
@@ -173,4 +181,4 @@ def _fallback_planner(message: str, card: dict) -> dict:
                       max(1, round(n * ppm)) if "month" in unit else n
         return {"tool": "forecast", "args": {"periods": periods}}
 
-    return {"tool": "none", "args": {}}
+    return {"tool": "semantic_qa", "args": {"question": message}}

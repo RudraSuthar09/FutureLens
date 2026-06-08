@@ -7,7 +7,7 @@ import pandas as pd
 import numpy as np
 import logging
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, UploadFile, File, HTTPException, Request
+from fastapi import FastAPI, UploadFile, File, HTTPException, Request, Form
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
@@ -118,10 +118,10 @@ def _compute_column_relationships(
         if col not in df_work.columns:
             continue
         try:
-            aligned = df_work[["sales", col]].dropna()
+            aligned = df_work[["_target_", col]].dropna()
             if len(aligned) < 4:
                 continue
-            corr = round(float(aligned["sales"].corr(aligned[col])), 3)
+            corr = round(float(aligned["_target_"].corr(aligned[col])), 3)
             relationships["correlations_with_target"][col] = corr
         except Exception:
             continue
@@ -136,10 +136,10 @@ def _compute_column_relationships(
         col_lower = col.lower()
         try:
             if is_profit_target and any(k in col_lower for k in ["sales", "revenue", "turnover"]):
-                aligned = df_work[["sales", col]].dropna()
+                aligned = df_work[["_target_", col]].dropna()
                 aligned = aligned[aligned[col] != 0]
                 if len(aligned) >= 4:
-                    margin = round(float((aligned["sales"] / aligned[col]).mean()), 4)
+                    margin = round(float((aligned["_target_"] / aligned[col]).mean()), 4)
                     relationships["profit_margin"] = {
                         "ratio": margin,
                         "profit_col": original_target,
@@ -147,10 +147,10 @@ def _compute_column_relationships(
                     }
                     break
             elif is_sales_target and any(k in col_lower for k in ["profit", "income", "earnings", "net"]):
-                aligned = df_work[["sales", col]].dropna()
-                aligned = aligned[aligned["sales"] != 0]
+                aligned = df_work[["_target_", col]].dropna()
+                aligned = aligned[aligned["_target_"] != 0]
                 if len(aligned) >= 4:
-                    margin = round(float((aligned[col] / aligned["sales"]).mean()), 4)
+                    margin = round(float((aligned[col] / aligned["_target_"]).mean()), 4)
                     relationships["profit_margin"] = {
                         "ratio": margin,
                         "profit_col": col,
@@ -165,7 +165,7 @@ def _compute_column_relationships(
             continue
         try:
             shifted = df_work[col].shift(1)
-            aligned = pd.concat([df_work["sales"], shifted], axis=1).dropna()
+            aligned = pd.concat([df_work["_target_"], shifted], axis=1).dropna()
             aligned.columns = ["target", "lagged"]
             if len(aligned) < 4:
                 continue
@@ -178,40 +178,63 @@ def _compute_column_relationships(
     return relationships
 
 
+def _coerce_numeric_series(series: pd.Series) -> pd.Series:
+    """Convert messy numeric text (commas, currency, spaces) to numeric."""
+    cleaned = (
+        series.astype(str)
+        .str.replace("\xa0", " ", regex=False)
+        .str.replace(",", "", regex=False)
+        .str.strip()
+        .str.replace(r"[^0-9eE+\-.]", "", regex=True)
+    )
+    return pd.to_numeric(cleaned, errors="coerce")
+
+
 def detect_target_column(df: pd.DataFrame, date_col: str) -> str:
-    preferred_names = [
-        "AveragePrice", "sales", "Sales", "price", "revenue",
-        "amount", "value", "close", "Close",
+    preferred_tokens = [
+        "sales", "revenue", "amount", "value", "price", "profit",
+        "income", "earnings", "cost", "close", "total", "gmv",
     ]
-    num_cols = df.select_dtypes(include=["number"]).columns.tolist()
+
     candidates = []
-    for col in num_cols:
+    n_rows = max(len(df), 1)
+
+    for col in df.columns:
         if col == date_col:
             continue
-        null_ratio = df[col].isna().sum() / len(df)
-        if null_ratio > 0.30:
+
+        col_lower = str(col).lower()
+        series_num = _coerce_numeric_series(df[col])
+        valid_ratio = float(series_num.notna().sum()) / n_rows
+
+        # Keep only columns that are meaningfully numeric after coercion.
+        if valid_ratio < 0.6:
             continue
-        col_lower = col.lower()
-        if "id" in col_lower and df[col].nunique() == len(df):
+
+        non_null = series_num.dropna()
+        nunique = int(non_null.nunique()) if not non_null.empty else 0
+        if nunique <= 1:
             continue
-        if df[col].dtype in [np.int64, np.int32, np.int16, np.int8]:
-            if df[col].nunique() == len(df):
-                continue
-        candidates.append(col)
+
+        # Drop likely row identifiers.
+        if "id" in col_lower and nunique >= int(0.9 * n_rows):
+            continue
+
+        mean_val = float(non_null.mean()) if len(non_null) else 0.0
+        std_val = float(non_null.std()) if len(non_null) > 1 else 0.0
+        cv = std_val / (abs(mean_val) + 1e-8)
+
+        # Weighted score: semantic name + numeric completeness + variability.
+        token_score = sum(1.0 for t in preferred_tokens if t in col_lower)
+        score = (2.0 * token_score) + valid_ratio + min(cv, 5.0)
+
+        candidates.append((col, score))
 
     if not candidates:
         raise ValueError("No suitable numeric target column found in CSV.")
 
-    for name in preferred_names:
-        if name in candidates:
-            return name
-
-    cv_scores = {}
-    for col in candidates:
-        mean_val = float(df[col].mean())
-        std_val  = float(df[col].std())
-        cv_scores[col] = std_val / abs(mean_val) if mean_val != 0 else 0.0
-    return max(cv_scores, key=cv_scores.get)
+    candidates.sort(key=lambda x: x[1], reverse=True)
+    return candidates[0][0]
 
 
 def build_dataset_profile(df: pd.DataFrame, max_categories: int = 8, sample_rows: int = 12) -> dict:
@@ -265,7 +288,7 @@ def pick_group_column(df: pd.DataFrame) -> str | None:
 
 
 def _make_empty_forecast(df_work: pd.DataFrame, detected_columns: dict) -> dict:
-    sales = df_work["sales"].dropna().tolist()
+    sales = df_work["_target_"].dropna().tolist()
     last_val = float(sales[-1]) if sales else 0.0
     return {
         "dates": [], "forecast": [], "lower": [], "upper": [],
@@ -307,19 +330,19 @@ def _run_group_forecasts(df, group_col, original_date_col, original_target_col, 
             gdf = df_tmp[df_tmp[group_col] == g][
                 [original_date_col, original_target_col]
             ].copy()
-            gdf.rename(columns={original_date_col: "date", original_target_col: "sales"}, inplace=True)
+            gdf.rename(columns={original_date_col: "date", original_target_col: "_target_"}, inplace=True)
             gdf["date"]  = pd.to_datetime(gdf["date"], errors="coerce")
-            gdf["sales"] = pd.to_numeric(gdf["sales"], errors="coerce")
-            gdf = gdf.dropna(subset=["date", "sales"])
+            gdf["_target_"] = pd.to_numeric(gdf["_target_"], errors="coerce")
+            gdf = gdf.dropna(subset=["date", "_target_"])
 
             # Resample to weekly SUM
             gdf = (
-                gdf.set_index("date")["sales"]
+                gdf.set_index("date")["_target_"]
                 .resample("W").sum()
                 .reset_index()
             )
-            gdf.columns = ["date", "sales"]
-            gdf = gdf[gdf["sales"] != 0].reset_index(drop=True)
+            gdf.columns = ["date", "_target_"]
+            gdf = gdf[gdf["_target_"] != 0].reset_index(drop=True)
 
             if len(gdf) < 10:
                 continue
@@ -685,7 +708,12 @@ End with exactly one follow-up question suggestion.
 # ---------------------------------------------------------------------------
 
 @app.post("/upload")
-async def upload_file(file: UploadFile = File(...)):
+async def upload_file(
+    file: UploadFile = File(...),
+    selected_x_col: str = Form(""),
+    selected_y_col: str = Form(""),
+    selected_chart_type: str = Form("auto"),
+):
     try:
         contents = await file.read()
 
@@ -699,68 +727,148 @@ async def upload_file(file: UploadFile = File(...)):
 
         dataset_profile = build_dataset_profile(df)
 
-        # ── Step 1: Try to detect a real date column ──
-        original_date_col = detect_date_column(df) if _has_date_column(df) else None
-        has_real_date     = original_date_col is not None
+        # ── Optional user overrides from UI ──
+        selected_x_col = (selected_x_col or "").strip()
+        selected_y_col = (selected_y_col or "").strip()
+        selected_chart_type = (selected_chart_type or "auto").strip().lower()
 
-        # ── Step 1b: Groq classifies dataset + picks chart config ──
-        groq_picked        = None
-        is_cross_sectional = False
-        chart_config       = None
+        if selected_x_col == "__auto__":
+            selected_x_col = ""
+        if selected_y_col == "__auto__":
+            selected_y_col = ""
 
-        if not has_real_date:
-            from api.column_picker import pick_columns_with_groq
-            groq_picked = pick_columns_with_groq(dataset_profile)
+        selected_x_col = selected_x_col if selected_x_col in df.columns else ""
+        selected_y_col = selected_y_col if selected_y_col in df.columns else ""
 
-            actual_cols_lower = {c.lower(): c for c in df.columns}
+        # With simplified UI, Y selection is the user-selected target.
+        selected_target_col = selected_y_col if selected_y_col else ""
 
-            if groq_picked.get("x_col"):
-                picked_x = groq_picked["x_col"].lower()
-                if picked_x in actual_cols_lower:
-                    groq_picked["x_col"] = actual_cols_lower[picked_x]
-                elif groq_picked["x_col"] not in df.columns:
-                    groq_picked["x_col"] = None
+        # If user picked X and it looks like time, treat it as date axis.
+        selected_date_col = ""
+        force_cross_sectional = False
+        if selected_x_col:
+            parsed_x = pd.to_datetime(df[selected_x_col], errors="coerce", utc=False)
+            valid_ratio_x = parsed_x.notna().sum() / max(len(df), 1)
+            if valid_ratio_x >= 0.6:
+                selected_date_col = selected_x_col
+            else:
+                # Respect user-selected non-temporal X axis.
+                force_cross_sectional = True
 
-            if groq_picked.get("y_col"):
-                picked_y = groq_picked["y_col"].lower()
-                if picked_y in actual_cols_lower:
-                    groq_picked["y_col"] = actual_cols_lower[picked_y]
-                elif groq_picked["y_col"] not in df.columns:
-                    groq_picked["y_col"] = None
+        # ── Step 1: Date column (manual override first, then auto-detect) ──
+        if force_cross_sectional:
+            original_date_col = None
+        elif selected_date_col:
+            original_date_col = selected_date_col
+        else:
+            original_date_col = detect_date_column(df) if _has_date_column(df) else None
 
-            is_cross_sectional = groq_picked.get("dataset_type") != "time_series"
-            chart_config       = groq_picked
+        has_real_date = original_date_col is not None
 
-            logger.info(
-                f"Groq: dataset_type={groq_picked.get('dataset_type')}, "
-                f"chart={groq_picked.get('chart_type')}, "
-                f"x={groq_picked.get('x_col')}, y={groq_picked.get('y_col')}, "
-                f"color={groq_picked.get('color_col')}, reason={groq_picked.get('reason')}"
-            )
+        # ── Step 1b: Groq picks chart instructions (always) ──
+        from api.column_picker import pick_columns_with_groq
+        try:
+            groq_picked = pick_columns_with_groq(dataset_profile) or {}
+        except Exception as e:
+            logger.warning(f"Groq column picker failed: {e}")
+            groq_picked = {}
+
+        actual_cols_lower = {c.lower(): c for c in df.columns}
+        if groq_picked.get("x_col"):
+            picked_x = str(groq_picked["x_col"]).lower()
+            if picked_x in actual_cols_lower:
+                groq_picked["x_col"] = actual_cols_lower[picked_x]
+            elif groq_picked["x_col"] not in df.columns:
+                groq_picked["x_col"] = None
+
+        if groq_picked.get("y_col"):
+            picked_y = str(groq_picked["y_col"]).lower()
+            if picked_y in actual_cols_lower:
+                groq_picked["y_col"] = actual_cols_lower[picked_y]
+            elif groq_picked["y_col"] not in df.columns:
+                groq_picked["y_col"] = None
+
+        chart_config = dict(groq_picked)
+
+        # User-selected controls override Groq output.
+        if selected_x_col:
+            chart_config["x_col"] = selected_x_col
+        if selected_y_col:
+            chart_config["y_col"] = selected_y_col
+        if selected_chart_type and selected_chart_type != "auto":
+            chart_config["chart_type"] = selected_chart_type
+
+        if force_cross_sectional:
+            is_cross_sectional = True
+        elif selected_date_col:
+            is_cross_sectional = False
+        else:
+            if not has_real_date:
+                is_cross_sectional = True
+            else:
+                is_cross_sectional = chart_config.get("dataset_type") != "time_series"
+            
+        if is_cross_sectional and not selected_date_col:
+            has_real_date = False
+            original_date_col = None
+
+        chart_config["dataset_type"] = "cross_sectional" if is_cross_sectional else "time_series"
+
+        logger.info(
+            f"Chart config: dataset_type={chart_config.get('dataset_type')}, "
+            f"chart={chart_config.get('chart_type')}, x={chart_config.get('x_col')}, "
+            f"y={chart_config.get('y_col')}, color={chart_config.get('color_col')}, "
+            f"reason={chart_config.get('reason', '')}"
+        )
 
         # ── Step 2: Detect target column ──
-        if groq_picked and groq_picked.get("y_col") and groq_picked["y_col"] in df.columns:
-            original_target_col = groq_picked["y_col"]
+        if selected_target_col:
+            original_target_col = selected_target_col
+        elif chart_config.get("y_col") and chart_config.get("y_col") in df.columns:
+            original_target_col = chart_config["y_col"]
         else:
             try:
                 original_target_col = detect_target_column(df, original_date_col)
             except ValueError as e:
-                raise HTTPException(status_code=400, detail=str(e))
+                # Fallback for purely categorical datasets (like a list of holidays)
+                df["_count_"] = 1
+                original_target_col = "_count_"
+                if not chart_config.get("y_col"):
+                    chart_config["y_col"] = "_count_"
 
-        # ── Step 3: Feature columns ──
-        num_cols     = df.select_dtypes(include=["number"]).columns.tolist()
-        feature_cols = [
-            c for c in num_cols
-            if c != original_date_col
-            and c != original_target_col
-            and df[c].isna().sum() / len(df) <= 0.30
-        ]
+        if selected_x_col:
+            chart_config["x_col"] = selected_x_col
+        if selected_y_col:
+            chart_config["y_col"] = selected_y_col
+        if selected_target_col and "y_col" not in chart_config:
+            chart_config["y_col"] = selected_target_col
+        if selected_chart_type and selected_chart_type != "auto":
+            chart_config["chart_type"] = selected_chart_type
+
+        # Infer dataset mode from the selected X column parseability when present.
+        if selected_x_col:
+            chart_config["dataset_type"] = "time_series" if has_real_date else "cross_sectional"
+
+        # ── Step 3: Feature columns (dynamic numeric detection) ──
+        feature_cols = []
+        for c in df.columns:
+            if c in {original_date_col, original_target_col}:
+                continue
+            col_lower = str(c).lower()
+            coerced = _coerce_numeric_series(df[c])
+            valid_ratio = coerced.notna().sum() / max(len(df), 1)
+            if valid_ratio < 0.7:
+                continue
+            nunique = coerced.nunique(dropna=True)
+            if "id" in col_lower and nunique >= int(0.9 * len(df)):
+                continue
+            feature_cols.append(c)
 
         # ── Step 4: Build working frame ──
         if has_real_date:
             use_cols = [original_date_col, original_target_col] + feature_cols
             df_work  = df[use_cols].copy()
-            df_work.rename(columns={original_date_col: "date", original_target_col: "sales"}, inplace=True)
+            df_work.rename(columns={original_date_col: "date", original_target_col: "_target_"}, inplace=True)
             df_work["date"] = pd.to_datetime(df_work["date"], errors="coerce", utc=False)
             df_work = df_work.dropna(subset=["date"])
             date_was_generated = False
@@ -768,10 +876,10 @@ async def upload_file(file: UploadFile = File(...)):
 
         elif not is_cross_sectional:
             # Time-series without a real date column — synthesise dates
-            groq_time_col = groq_picked.get("x_col") if groq_picked else None
+            groq_time_col = chart_config.get("x_col")
             use_cols = [original_target_col] + feature_cols
             df_work  = df[use_cols].copy()
-            df_work.rename(columns={original_target_col: "sales"}, inplace=True)
+            df_work.rename(columns={original_target_col: "_target_"}, inplace=True)
             if groq_time_col and groq_time_col in df.columns:
                 df_work = df_work.iloc[df[groq_time_col].argsort().values]
             df_work = df_work.reset_index(drop=True)
@@ -784,7 +892,7 @@ async def upload_file(file: UploadFile = File(...)):
             # Cross-sectional — synthesise placeholder dates for pipeline compatibility
             use_cols = [original_target_col] + feature_cols
             df_work  = df[use_cols].copy()
-            df_work.rename(columns={original_target_col: "sales"}, inplace=True)
+            df_work.rename(columns={original_target_col: "_target_"}, inplace=True)
             df_work = df_work.reset_index(drop=True)
             df_work.insert(0, "date", pd.date_range(start="2020-01-01", periods=len(df_work), freq="D"))
             original_date_col  = "_cross_sectional_"
@@ -792,36 +900,57 @@ async def upload_file(file: UploadFile = File(...)):
             synthetic_time_col = None
 
         # ── Coerce numeric types ──
-        df_work["sales"] = pd.to_numeric(
-            df_work["sales"].astype(str).str.replace(",", "").str.replace("\xa0", " ").str.strip(),
-            errors="coerce",
-        )
+        df_work["_target_"] = _coerce_numeric_series(df_work["_target_"])
         for c in feature_cols:
             if c in df_work.columns:
-                df_work[c] = pd.to_numeric(
-                    df_work[c].astype(str).str.replace(",", "").str.replace("\xa0", " ").str.strip(),
-                    errors="coerce",
-                )
+                df_work[c] = _coerce_numeric_series(df_work[c])
 
-        df_work = df_work.dropna(subset=["sales"])
+        df_work = df_work.dropna(subset=["_target_"])
 
-        agg_map = {"sales": "sum"}
+        agg_map = {"_target_": "sum"}
         for c in feature_cols:
             if c in df_work.columns:
                 agg_map[c] = "sum"
 
         df_work = df_work.groupby("date", as_index=False).agg(agg_map)
         df_work = df_work.sort_values("date").reset_index(drop=True)
-        df_work["sales"] = df_work["sales"].ffill().bfill()
+        df_work["_target_"] = df_work["_target_"].ffill().bfill()
         for c in feature_cols:
             if c in df_work.columns:
                 df_work[c] = df_work[c].ffill().bfill()
 
         if len(df_work) < 5:
-            raise HTTPException(
-                status_code=400,
-                detail="Dataset too small — need at least 5 rows after cleaning.",
-            )
+            # Fallback: if the source file is large, keep row-level numeric target
+            # with a synthetic timeline instead of hard-failing after aggregation.
+            fallback_target = _coerce_numeric_series(df[original_target_col]).dropna()
+            if len(df) >= 5 and len(fallback_target) >= 5:
+                logger.warning(
+                    "Low post-clean row count (%s). Falling back to synthetic row-level timeline.",
+                    len(df_work),
+                )
+
+                df_fallback = pd.DataFrame({"_target_": _coerce_numeric_series(df[original_target_col])})
+                for c in feature_cols:
+                    if c in df.columns:
+                        df_fallback[c] = _coerce_numeric_series(df[c])
+
+                df_fallback = df_fallback.dropna(subset=["_target_"]).reset_index(drop=True)
+                df_fallback.insert(0, "date", pd.date_range(start="2020-01-01", periods=len(df_fallback), freq="D"))
+
+                df_work = df_fallback
+                has_real_date = False
+                is_cross_sectional = True
+                original_date_col = "_fallback_generated_"
+                date_was_generated = True
+                synthetic_time_col = None
+
+                if not chart_config:
+                    chart_config = {}
+            else:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Dataset too small — need at least 5 usable rows after cleaning target values.",
+                )
 
         session_id = str(uuid.uuid4())
         save_upload(session_id, file.filename, len(df_work), df_work.columns.tolist())
@@ -833,7 +962,11 @@ async def upload_file(file: UploadFile = File(...)):
             "has_date":           has_real_date,
             "date_was_generated": date_was_generated,
             "synthetic_time_col": synthetic_time_col,
-            "groq_reason":        groq_picked.get("reason", "") if groq_picked else "",
+            "selected_x_col":     selected_x_col or None,
+            "selected_y_col":     selected_y_col or None,
+            "selected_target_col": selected_target_col or None,
+            "selected_chart_type": selected_chart_type if selected_chart_type != "auto" else None,
+            "groq_reason":        chart_config.get("reason", ""),
             "chart_config":       chart_config,
         }
 
@@ -845,6 +978,10 @@ async def upload_file(file: UploadFile = File(...)):
         truth_meter      = {"status": "ok", "score": 0, "color": "gray", "label": "No forecast"}
         group_forecasts  = None
         chart_data       = None
+
+        custom_plot_requested = bool(
+            selected_x_col or selected_y_col or (selected_chart_type and selected_chart_type != "auto")
+        )
 
         if is_cross_sectional:
             logger.info(f"Cross-sectional — building {chart_config.get('chart_type')} chart")
@@ -885,6 +1022,11 @@ async def upload_file(file: UploadFile = File(...)):
             elif group_col:
                 group_forecasts = _build_static_group_summary(df, group_col, original_target_col)
 
+        # Also build a custom chart for time-series uploads when user explicitly selected plotting controls.
+        if not is_cross_sectional and custom_plot_requested:
+            if chart_config.get("x_col") in df.columns and chart_config.get("y_col") in df.columns:
+                chart_data = _build_chart_data(df, chart_config)
+
         # ── Assemble response ──
         forecast_results["chart_data"]         = chart_data
         forecast_results["chart_config"]       = chart_config
@@ -898,6 +1040,12 @@ async def upload_file(file: UploadFile = File(...)):
         forecast_results["dataset_profile"]    = dataset_profile
         forecast_results["group_forecasts"]    = group_forecasts
         forecast_results["has_date"]           = has_real_date
+        forecast_results["custom_plot_active"] = bool(chart_data and custom_plot_requested)
+        forecast_results["selectable_columns"] = {
+            "all_columns": df.columns.tolist(),
+            "date_candidates": [c for c in df.columns if c == original_date_col] + [c for c in df.columns if c != original_date_col],
+            "target_candidates": [c for c in df.columns if c == original_target_col] + [c for c in df.columns if c != original_target_col],
+        }
 
         sanitized_results = _sanitize_for_json(forecast_results)
 
@@ -1000,9 +1148,7 @@ async def get_anomalies_data(session_id: str):
 
 @app.post("/chat")
 async def chat_endpoint(request: Request):
-    from api.planner import plan
-    from api.tools import execute_tool
-    from api.agent import explain
+    from api.agent import groq_agent, format_for_user
 
     body       = await request.json()
     message    = body.get("message", "")
@@ -1028,39 +1174,28 @@ async def chat_endpoint(request: Request):
     except Exception:
         recent_chat = []
 
-    # Step 1 — plan
-    tool_call = plan(message, card)
-    logger.info(f"Tool call planned: {tool_call}")
-
-    # Step 2 — execute
-    tool_result = execute_tool(
-        tool_call       = tool_call,
-        card            = card,
-        forecast_data   = forecast_data,
-        anomalies_data  = anomalies_data,
-        group_forecasts = group_forecasts,
+    # NEW ARCHITECTURE: Groq Agent (main orchestrator) + Gemini Formatter
+    # Step 1 — Groq Agent analyzes and processes
+    logger.info(f"Chat query: {message}")
+    groq_result = groq_agent(
+        user_message=message,
+        forecast_data=forecast_data,
+        anomalies_data=anomalies_data,
+        group_forecasts=group_forecasts,
+        card=card,
+        chat_history=recent_chat,
     )
-    logger.info(f"Tool result: {tool_result.get('tool')} — keys: {list(tool_result.keys())}")
+    logger.info(f"Groq result: {groq_result.get('source')} - answer: {groq_result.get('answer', '')[:60]}")
 
-    # Step 3 — explain
+    # Step 2 — Gemini Formatter formats for user
     rate_limited = False
     try:
-        response_text = explain(
-            user_message = message,
-            tool_result  = tool_result,
-            card         = card,
-            chat_history = recent_chat,
-        )
-        if "rate" in response_text.lower() and "limit" in response_text.lower():
-            rate_limited = True
+        response_text = format_for_user(groq_result, message)
+        if not response_text or response_text.strip() == "":
+            response_text = groq_result.get("answer", "I encountered an issue processing your question.")
     except Exception as e:
-        err_str = str(e).lower()
-        if "429" in str(e) or "quota" in err_str or "rate" in err_str:
-            rate_limited  = True
-            response_text = _build_rate_limit_fallback(tool_result, card)
-        else:
-            logger.error(f"Explain error: {e}")
-            response_text = "I encountered an error. Please try again."
+        logger.error(f"Formatting error: {e}")
+        response_text = groq_result.get("answer", "I encountered an error. Please try again.")
 
     if len(response_text) > 700:
         cut = response_text.find("\n\n", 400)
@@ -1087,7 +1222,6 @@ async def chat_endpoint(request: Request):
         "suggested_questions": suggested,
         "rate_limited":        rate_limited,
         "chart_context":       chart_context,
-        "debug_tool":          tool_call.get("tool"),
     }
 
 

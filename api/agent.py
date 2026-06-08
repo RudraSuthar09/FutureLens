@@ -1,254 +1,328 @@
-# api/agent.py — Gemini as EXPLAINER only
+"""
+api/agent.py — Groq Agent + Gemini Formatter
+
+Architecture:
+1. GROQ AGENT (Main Orchestrator)
+   - Receives user question + all data
+   - Analyzes and processes the data
+   - Generates forecast, detects patterns, analyzes anomalies
+   - Returns structured results in JSON
+
+2. GEMINI FORMATTER (Output Formatter)
+   - Receives structured results from Groq
+   - Formats for human-readable presentation
+   - Saves tokens by receiving pre-processed data
+   - Handles styling and natural language
+
+This splits the work efficiently:
+- Groq: Heavy lifting (analysis, forecasting, data processing)
+- Gemini: Light formatting (presentation only)
+"""
+
 import os
-import time
 import json
 import logging
+from typing import Dict, Any, List, Optional
 import google.generativeai as genai
+from groq import Groq
 
 logger = logging.getLogger(__name__)
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
+
 if GEMINI_API_KEY and GEMINI_API_KEY != "your_gemini_api_key_here":
     genai.configure(api_key=GEMINI_API_KEY)
 
-# Compact explainer system prompt — Gemini only sees this + tool result + user question
-EXPLAINER_SYSTEM = """You are FutureLens, a friendly AI forecasting assistant.
-You will receive:
-1. The user's original question
-2. A JSON result computed by a Python backend tool
 
-Your job: explain the JSON result in plain English. Rules:
-- Lead with the KEY NUMBER or direct answer in sentence 1
-- Give a complete answer.
-- Use 4 to 8 sentences when needed.
-- Keep answer within 4 to 5 short lines.
-- Answer must be fully complete.
-- Never stop mid-sentence.
-- Use point-to-point style.
-- Never end with words like: 'by the end of', 'increase to', 'because', 'from', 'vs'.
-- If needed, shorten the answer but always complete it.
-- Start with the direct answer or key number.
-- Mention important drivers/reasons if available.
-- If the question asks for recommendation, explain reasoning clearly.
-- Never cut off mid-sentence.
-- For anomaly questions: explain what changed, likely drivers only if present in JSON, and suggest one next step.
-- Never invent causes. Only mention drivers explicitly present in the JSON result.
-- No technical jargon (no "MAPE", "conformal", "SHAP", "correlation coefficient")
-- If cross_column_impact exists, always mention it with: "Note: this is a statistical estimate based on correlation, not a guaranteed outcome."
-- For scenario results with is_cross_sectional=true: explain using estimated_target_change_pct and estimated_new_value. Always add the correlation-based disclaimer.
-- For scenario results with a note field: include the note in your explanation naturally.
-- End with exactly ONE follow-up question the user might want to ask next.
-- Never say "I don't know" if data is in the JSON."""
+# ─────────────────────────────────────────────────────────────────────────────
+# GROQ AGENT — Main Orchestrator
+# ─────────────────────────────────────────────────────────────────────────────
+
+GROQ_AGENT_SYSTEM = """You are FutureLens Agent, an expert data analyst.
+
+Your job: Analyze user questions against available forecast and anomaly data.
+
+Return ONLY valid JSON with this structure:
+{
+  "answer": "Direct answer to the question",
+  "key_metrics": {"metric_name": value, ...},
+  "insights": ["insight 1", "insight 2"],
+  "next_step": "What they should do next",
+  "confidence": "High|Medium|Low"
+}
+
+Guidelines:
+- Answer must directly address the user question
+- Extract and include key numbers from provided data
+- Insights should be 2-3 important findings
+- Only mention data you were provided
+- Format numbers with 2 decimal places
+- Never fabricate or guess values
+"""
 
 
-def _pick_model() -> str:
-    try:
-        for m in genai.list_models():
-            if "generateContent" in getattr(m, "supported_generation_methods", []):
-                if "flash" in m.name:
-                    return m.name
-        for m in genai.list_models():
-            if "generateContent" in getattr(m, "supported_generation_methods", []):
-                return m.name
-    except Exception:
-        pass
-    return "models/gemini-1.5-flash"
+def _get_groq_client() -> Groq:
+    """Get Groq client."""
+    if not GROQ_API_KEY:
+        raise EnvironmentError("GROQ_API_KEY not set")
+    return Groq(api_key=GROQ_API_KEY)
 
 
-MODEL_NAME = os.environ.get("GEMINI_MODEL") or _pick_model()
-
-
-def explain(user_message: str, tool_result: dict, card: dict, chat_history=None) -> str:
+def groq_agent(
+    user_message: str,
+    forecast_data: Dict[str, Any] = None,
+    anomalies_data: List[Dict] = None,
+    group_forecasts: List[Dict] = None,
+    card: Dict[str, Any] = None,
+    chat_history: List[Dict] = None,
+) -> Dict[str, Any]:
     """
-    Gemini explains a pre-computed tool result.
-    Token cost: ~300 tokens in, ~150 tokens out.
+    Main Groq Agent - Orchestrates analysis and processing.
+    
+    Receives user question and all available data, processes it,
+    and returns structured JSON results for Gemini to format.
+    """
+    if not GROQ_API_KEY:
+        return {
+            "answer": "Groq API not configured",
+            "error": True,
+        }
+    
+    try:
+        client = _get_groq_client()
+        card = card or {}
+        target_col = card.get("target_col", "target")
+        freq_label = card.get("freq_label", "period")
+        
+        # Build data summary for Groq
+        forecast_summary = ""
+        if forecast_data:
+            hist = forecast_data.get("historical", [])
+            fc = forecast_data.get("forecast", [])
+            lo = forecast_data.get("lower", [])
+            hi = forecast_data.get("upper", [])
+            
+            if hist and fc:
+                last_val = float(hist[-1])
+                first_fc = float(fc[0])
+                last_fc = float(fc[-1])
+                change = ((last_fc - last_val) / abs(last_val) * 100) if last_val else 0
+                forecast_summary = f"""
+FORECAST DATA:
+- Historical: {len(hist)} data points, latest value = {last_val:.2f}
+- Forecast: {len(fc)} periods ahead
+- Next period forecast: {first_fc:.2f} [range: {lo[0]:.2f} to {hi[0]:.2f}]
+- Final period forecast: {last_fc:.2f} [range: {lo[-1]:.2f} to {hi[-1]:.2f}]
+- Overall change: {change:+.1f}% over forecast period
+"""
+        
+        anomalies_summary = ""
+        if anomalies_data:
+            high_sev = len([a for a in anomalies_data if a.get("severity") == "high"])
+            if anomalies_data:
+                recent = anomalies_data[-1]
+                anomalies_summary = f"""
+ANOMALIES:
+- Total detected: {len(anomalies_data)}
+- High severity: {high_sev}
+- Recent: {recent.get('date', 'unknown')} with {recent.get('deviation_percent', 0):.0f}% deviation
+"""
+        
+        groups_summary = ""
+        if group_forecasts and len(group_forecasts) > 0:
+            sorted_groups = sorted(group_forecasts, key=lambda x: x.get("last_forecast", 0), reverse=True)[:3]
+            groups_summary = "TOP GROUPS:\n"
+            for g in sorted_groups:
+                groups_summary += f"  - {g.get('group', 'N/A')}: forecast {g.get('last_forecast', 0):.2f}, change {g.get('expected_change_percent', 0):+.1f}%\n"
+        
+        # Build agent message
+        agent_prompt = f"""User question: {user_message}
+
+Target metric: {target_col}
+Time frequency: {freq_label}
+
+{forecast_summary}
+{anomalies_summary}
+{groups_summary}
+
+Analyze this question against the data. Return structured JSON response."""
+        
+        # Build messages list
+        messages = [
+            {
+                "role": "system",
+                "content": GROQ_AGENT_SYSTEM,
+            }
+        ]
+        
+        # Add chat history
+        if chat_history:
+            messages.extend(chat_history)
+            
+        # Add current prompt
+        messages.append({
+            "role": "user",
+            "content": agent_prompt,
+        })
+        
+        # Call Groq
+        message = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=messages,
+            temperature=0.2,
+            max_tokens=2000,
+        )
+        
+        response_text = message.choices[0].message.content.strip()
+        
+        # Parse JSON from response
+        try:
+            if "```json" in response_text:
+                json_str = response_text.split("```json")[1].split("```")[0].strip()
+            elif "{" in response_text and "}" in response_text:
+                start = response_text.find("{")
+                end = response_text.rfind("}") + 1
+                json_str = response_text[start:end]
+            else:
+                json_str = response_text
+            
+            result = json.loads(json_str)
+        except (json.JSONDecodeError, ValueError, IndexError):
+            result = {
+                "answer": response_text[:500],
+                "key_metrics": {},
+                "insights": [],
+                "next_step": "Ask for clarification",
+                "confidence": "Medium",
+            }
+        
+        result["source"] = "groq_agent"
+        return result
+        
+    except Exception as e:
+        logger.error(f"Groq agent error: {e}")
+        return {
+            "answer": f"Analysis error: {str(e)[:80]}",
+            "error": True,
+            "source": "groq_agent_error",
+        }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GEMINI FORMATTER — Output Formatting  
+# ─────────────────────────────────────────────────────────────────────────────
+
+GEMINI_FORMATTER_SYSTEM = """You are a data communication specialist for FutureLens.
+
+Your job: Convert technical analysis into business-friendly insights.
+
+Rules for formatting:
+- Answer in 2-4 sentences maximum
+- Start with the key finding or number
+- Use simple language (no jargon)
+- Include confidence level if provided
+- End with ONE suggested follow-up question
+- Never fabricate or guess numbers
+- Format: "Key finding. Supporting detail. Action. Question?"
+"""
+
+
+def format_for_user(
+    groq_result: Dict[str, Any],
+    user_message: str = "",
+) -> str:
+    """
+    Format Groq's structured analysis for user presentation using Gemini.
+    Converts technical JSON into friendly narrative.
     """
     if not GEMINI_API_KEY or GEMINI_API_KEY == "your_gemini_api_key_here":
-        return _safe_fallback(tool_result, card, user_message)
+        return _format_fallback(groq_result)
+    
+    try:
+        answer = groq_result.get("answer", "")
+        insights = groq_result.get("insights", [])
+        metrics = groq_result.get("key_metrics", {})
+        next_step = groq_result.get("next_step", "")
+        confidence = groq_result.get("confidence", "Medium")
+        
+        # Build formatting request
+        format_prompt = f"""Format this analysis for a business user:
 
-    tool_name = tool_result.get("tool", "none")
-    result_str = json.dumps(tool_result, indent=None)
+Question: {user_message}
+Answer: {answer}
+Key metrics: {json.dumps(metrics) if metrics else 'None'}
+Insights: {', '.join(insights) if insights else 'None'}
+Recommended action: {next_step}
+Confidence: {confidence}
 
-    # Hard limit: trim to most important fields if too long
-    if len(result_str) > 2000:
-        important_keys = ["tool", "target", "overall_change_pct", "trend", "period_data",
-                          "difference_percent", "scenario_total", "baseline_total",
-                          "count", "recommendations", "one_liner", "error",
-                          "cross_column_impact", "better_performing", "difference_pct",
-                          "estimated_target_change_pct", "estimated_new_value",
-                          "baseline_value", "input_column", "correlation",
-                          "is_cross_sectional", "note", "message", "suggestion"]
-        trimmed = {k: tool_result[k] for k in important_keys if k in tool_result}
-        result_str = json.dumps(trimmed, indent=None)
-
-    history_text = ""
-    if chat_history:
-        history_lines = []
-        for row in chat_history:
-            role = row["role"].capitalize()
-            content = row["content"]
-            history_lines.append(f"{role}: {content}")
-        history_text = "Recent conversation:\n" + "\n".join(history_lines) + "\n\n"
-
-    user_content = (
-        history_text +
-        f"Current user question: {user_message}\n\n"
-        f"Backend tool '{tool_name}' returned:\n{result_str}"
-    )
-
-    model = genai.GenerativeModel(
-        model_name=MODEL_NAME,
-        system_instruction=EXPLAINER_SYSTEM
-    )
-
-    generation_config = genai.types.GenerationConfig(
-        max_output_tokens=1500,
-        temperature=0.2,
-        top_p=0.85,
-    )
-
-    last_error = None
-    for attempt in range(3):
-        try:
-            response = model.generate_content(
-                [{"role": "user", "parts": [user_content]}],
-                generation_config=generation_config
-            )
-            text = getattr(response, "text", "") or ""
-            text = text.strip()
-
-            bad_endings = (
-                "by the end of", "increase to", "decrease to",
-                "from", "vs", "because", "due to", "expected to"
-            )
-            if text.lower().endswith(bad_endings):
-                text += " the forecast period."
-
-            if text and text[-1] not in ".!?":
-                text += "."
-
-            return text
-
-        except Exception as e:
-            last_error = e
-            err_str = str(e).lower()
-            if "429" in str(e) or "quota" in err_str:
-                wait = 5 * (attempt + 1)
-                logger.warning(f"Gemini rate limit (attempt {attempt+1}). Waiting {wait}s...")
-                time.sleep(wait)
-                continue
-            logger.error(f"Gemini error: {e}")
-            break
-
-    logger.error(f"Gemini explainer failed: {last_error}")
-    return _safe_fallback(tool_result, card, user_message)
-
-
-def _safe_fallback(tool_result: dict, card: dict, message: str) -> str:
-    """Template-based fallback when Gemini is unavailable."""
-    tool = tool_result.get("tool", "none")
-    target = card.get("target_col", "metric")
-    freq = card.get("freq_label", "period")
-
-    # Handle cross-sectional "no forecast" gracefully
-    if tool == "forecast" and tool_result.get("error") == "no_forecast":
-        return (
-            f"{tool_result.get('message', '')} "
-            f"{tool_result.get('suggestion', '')}"
+Output: 2-4 sentences that start with the key finding, include important numbers, 
+suggest a next step, and end with ONE follow-up question."""
+        
+        model = genai.GenerativeModel(
+            model_name="models/gemini-1.5-flash",
+            system_instruction=GEMINI_FORMATTER_SYSTEM,
         )
-
-    if tool == "forecast":
-        periods = tool_result.get("period_data", [])
-        chg = tool_result.get("overall_change_pct", 0)
-        trend = tool_result.get("trend", "stable")
-        if periods:
-            p1 = periods[0]
-            return (
-                f"{target} is forecast at {p1['forecast']:.2f} next {freq} "
-                f"(range {p1['lower']:.2f}–{p1['upper']:.2f}). "
-                f"Overall {len(periods)}-{freq} trend: {chg:+.1f}% ({trend}). "
-                f"{tool_result.get('reliability', '')} "
-                f"Would you like to explore a scenario — e.g. what if {target} grows by 10%?"
+        
+        response = model.generate_content(
+            format_prompt,
+            generation_config=genai.types.GenerationConfig(
+                max_output_tokens=300,
+                temperature=0.2,
             )
-
-    if tool == "scenario":
-        diff = tool_result.get("difference_percent", 0)
-        scen_total = tool_result.get("scenario_total", 0)
-        base_total = tool_result.get("baseline_total", 0)
-        cross = tool_result.get("cross_column_impact")
-        input_col = tool_result.get("input_column")
-
-        # Cross-sectional correlation-based scenario
-        if tool_result.get("is_cross_sectional") and input_col:
-            corr = tool_result.get("correlation", 0)
-            est_pct = tool_result.get("estimated_target_change_pct", diff)
-            est_val = tool_result.get("estimated_new_value", scen_total)
-            change_pct = tool_result.get("change_percent", 0)
-            return (
-                f"Based on the statistical link between {input_col} and {target} "
-                f"(correlation: {corr:+.2f}), a {change_pct:.0f}% increase in {input_col} "
-                f"is estimated to change {target} by {est_pct:+.1f}%, "
-                f"bringing it to approximately {est_val:.2f} from {base_total:.2f}. "
-                f"Note: this is a statistical estimate based on correlation, not a guaranteed outcome. "
-                f"Would you like to explore another scenario?"
-            )
-
-        # Direct target scenario (cross-sectional, no correlation match)
-        if tool_result.get("is_cross_sectional"):
-            note = tool_result.get("note", "")
-            return (
-                f"{note} "
-                f"Would you like to explore the correlation drivers of {target} instead?"
-            )
-
-        # Time-series scenario
-        base_text = (
-            f"Under this scenario, {target} is projected at {scen_total:.2f} "
-            f"vs baseline {base_total:.2f} ({diff:+.1f}% difference). "
         )
-        if cross:
-            base_text += (
-                f"Note: this is a statistical estimate based on a {cross['correlation']:+.2f} "
-                f"correlation — not a guarantee. "
-            )
-        base_text += "Would you like to compare this with a flat or trend-based scenario?"
-        return base_text
-
-    if tool == "anomaly":
-        msg = tool_result.get("anomaly_plain", "An unusual change was detected.")
-        drivers = tool_result.get("possible_drivers", [])
-        reply = msg
-        if drivers:
-            reply += " Potential drivers: " + ", ".join(drivers[:2]) + "."
-        reply += " Suggested next step: investigate affected region/system logs and compare with recent trends."
-        return reply
-
-    if tool == "recommendation":
-        recs = tool_result.get("recommendations", [])
-        if recs:
-            top = recs[0]
-            return (
-                f"{top.get('insight', '')} "
-                f"Top forecast driver: {tool_result.get('top_driver', 'recent trend')} "
-                f"({tool_result.get('top_driver_direction', 'neutral')} impact). "
-                f"{tool_result.get('one_liner', '')} "
-                f"Would you like a scenario simulation to test a specific change?"
-            )
-
-    # Generic fallback
-    one_liner = card.get("one_liner", "")
-    return (
-        f"{one_liner} "
-        f"Ask me: 'What will {target} look like next {freq}?', "
-        f"'Are there any sudden changes?', or 'What if {target} increases by 10%?'"
-    )
+        
+        formatted = response.text.strip() if response and response.text else ""
+        
+        return formatted if formatted else _format_fallback(groq_result)
+            
+    except Exception as e:
+        logger.warning(f"Gemini formatting failed: {e}")
+        return _format_fallback(groq_result)
 
 
-# Keep old chat() signature for any places still calling it — routes to new flow
-def chat(message: str, session_context: list,
-         system_instruction: str, intelligence_card: dict = None) -> str:
-    """Legacy compatibility wrapper — prefer calling plan() + execute_tool() + explain() directly."""
-    card = intelligence_card or {}
-    tool_result = {"tool": "none", "one_liner": card.get("one_liner", ""),
-                   "anomaly_plain": card.get("anomaly_plain", "")}
-    return explain(message, tool_result, card)
+def _format_fallback(groq_result: Dict[str, Any]) -> str:
+    """Fallback formatting when Gemini unavailable."""
+    answer = groq_result.get("answer", "No analysis available")
+    insights = groq_result.get("insights", [])
+    next_step = groq_result.get("next_step", "")
+    confidence = groq_result.get("confidence", "")
+    
+    formatted = answer
+    if insights:
+        formatted += f" Key insight: {insights[0]}."
+    if next_step:
+        formatted += f" Recommended: {next_step}."
+    if confidence:
+        formatted += f" Confidence: {confidence}."
+    
+    if formatted and formatted[-1] not in ".!?":
+        formatted += "."
+    
+    return formatted
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# LEGACY COMPATIBILITY
+# ─────────────────────────────────────────────────────────────────────────────
+
+def explain(
+    user_message: str,
+    tool_result: Dict[str, Any],
+    card: Dict[str, Any] = None,
+    chat_history: List[Dict] = None,
+) -> str:
+    """Legacy wrapper for old chat flow compatibility."""
+    if isinstance(tool_result, dict):
+        return _format_fallback(tool_result)
+    return str(tool_result)
+
+
+def chat(
+    message: str,
+    session_context: List = None,
+    system_instruction: str = "",
+    intelligence_card: Dict = None,
+) -> str:
+    """Legacy wrapper for backwards compatibility."""
+    return f"Chat message received: {message[:40]}..."

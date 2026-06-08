@@ -3,6 +3,7 @@ import requests
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
+import io
 import os
 from dotenv import load_dotenv
 
@@ -265,7 +266,13 @@ def load_data(file_bytes=None, filename="data.csv"):
                 st.error("No file provided.")
                 return
 
-            response = requests.post(f"{API_URL}/upload", files=files)
+            payload = {
+                "selected_x_col": st.session_state.get("selected_x_col", "__auto__"),
+                "selected_y_col": st.session_state.get("selected_y_col", "__auto__"),
+                "selected_chart_type": st.session_state.get("selected_chart_type", "auto"),
+            }
+
+            response = requests.post(f"{API_URL}/upload", files=files, data=payload)
             if response.status_code == 200:
                 st.session_state.data       = response.json()
                 st.session_state.session_id = st.session_state.data.get("session_id", "demo")
@@ -276,8 +283,18 @@ def load_data(file_bytes=None, filename="data.csv"):
             st.error(f"Connection failed: {e}. Ensure the FastAPI backend is running on {API_URL}.")
 
 
+def _read_csv_columns(file_bytes: bytes) -> list:
+    for enc in ["utf-8", "cp1252", "latin1"]:
+        try:
+            df_preview = pd.read_csv(io.BytesIO(file_bytes), encoding=enc, nrows=20)
+            return df_preview.columns.tolist()
+        except Exception:
+            continue
+    return []
+
+
 def _render_cross_sectional_chart(chart_data: dict, chart_config: dict):
-    """Render Groq-specified chart for cross-sectional datasets."""
+    """Render Groq-specified chart for cross-sectional datasets with proper data labels."""
     if not chart_data or not chart_data.get("rows"):
         st.info("No chart data available for this dataset.")
         return
@@ -307,15 +324,26 @@ def _render_cross_sectional_chart(chart_data: dict, chart_config: dict):
             palette = px.colors.qualitative.Plotly
             for i, c in enumerate(colors):
                 mask = df_chart["color"] == c
+                x_vals = df_chart[mask]["y"] if "y" in df_chart.columns else []
+                y_vals = df_chart[mask]["x"] if "x" in df_chart.columns else []
                 fig.add_trace(go.Bar(
-                    x=df_chart[mask]["y"] if "y" in df_chart.columns else [],
-                    y=df_chart[mask]["x"] if "x" in df_chart.columns else [],
+                    x=x_vals,
+                    y=y_vals,
                     name=str(c),
                     orientation="h",
                     marker_color=palette[i % len(palette)],
+                    text=[f"{v:.2f}" if isinstance(v, (int, float)) else v for v in x_vals],
+                    textposition="auto",
                 ))
         else:
-            fig.add_trace(go.Bar(x=ys, y=xs, orientation="h", marker_color="#5A287D"))
+            fig.add_trace(go.Bar(
+                x=ys, 
+                y=xs, 
+                orientation="h", 
+                marker_color="#5A287D",
+                text=[f"{v:.2f}" if isinstance(v, (int, float)) else v for v in ys],
+                textposition="auto",
+            ))
 
         fig.update_layout(
             title=title,
@@ -326,22 +354,43 @@ def _render_cross_sectional_chart(chart_data: dict, chart_config: dict):
     elif chart_type == "bar":
         xs = df_chart["x"] if "x" in df_chart.columns else df_chart.iloc[:, 0]
         ys = df_chart["y"] if "y" in df_chart.columns else df_chart.iloc[:, 1]
-        fig.add_trace(go.Bar(x=xs, y=ys, marker_color="#5A287D"))
+        fig.add_trace(go.Bar(
+            x=xs, 
+            y=ys, 
+            marker_color="#5A287D",
+            text=[f"{v:.2f}" if isinstance(v, (int, float)) else v for v in ys],
+            textposition="auto",
+        ))
         fig.update_layout(title=title, **_chart_layout(x_title=x_label, y_title=y_label))
 
     elif chart_type == "scatter":
         xs        = df_chart["x"]     if "x"     in df_chart.columns else df_chart.iloc[:, 0]
         ys        = df_chart["y"]     if "y"     in df_chart.columns else df_chart.iloc[:, 1]
         colors_col = df_chart["color"] if "color" in df_chart.columns else None
+        
+        # Create hover text with all available data
+        hover_texts = []
+        for idx, row in df_chart.iterrows():
+            text = f"{x_label}: {xs.iloc[idx]}<br>{y_label}: {ys.iloc[idx]:.2f}"
+            for col in df_chart.columns:
+                if col not in ["x", "y", "color", "size"] and isinstance(df_chart[col].iloc[idx], (int, float)):
+                    text += f"<br>{col}: {df_chart[col].iloc[idx]:.2f}"
+            hover_texts.append(text)
+        
         fig.add_trace(go.Scatter(
-            x=xs, y=ys,
-            mode="markers",
+            x=xs, 
+            y=ys,
+            mode="markers+text",
             marker=dict(
                 size=10,
                 color=colors_col if colors_col is not None else "#5A287D",
                 colorscale="Viridis" if colors_col is not None else None,
                 showscale=True if colors_col is not None else False,
             ),
+            text=[f"{v:.1f}" if isinstance(v, (int, float)) else str(v) for v in ys],
+            textposition="top center",
+            hovertext=hover_texts,
+            hoverinfo="text",
         ))
         fig.update_layout(title=title, **_chart_layout(x_title=x_label, y_title=y_label))
 
@@ -349,19 +398,50 @@ def _render_cross_sectional_chart(chart_data: dict, chart_config: dict):
         xs   = df_chart["x"] if "x" in df_chart.columns else df_chart.iloc[:, 0]
         ys   = df_chart["y"] if "y" in df_chart.columns else df_chart.iloc[:, 1]
         hole = 0.4 if chart_type == "donut" else 0
-        fig.add_trace(go.Pie(labels=xs, values=ys, hole=hole))
+        fig.add_trace(go.Pie(
+            labels=xs, 
+            values=ys, 
+            hole=hole,
+            textposition="inside",
+            textinfo="label+percent+value",
+        ))
         fig.update_layout(title=title)
 
     elif chart_type == "histogram":
         ys = df_chart["y"] if "y" in df_chart.columns else df_chart.iloc[:, 0]
-        fig.add_trace(go.Histogram(x=ys, marker_color="#5A287D"))
+        fig.add_trace(go.Histogram(
+            x=ys, 
+            marker_color="#5A287D",
+            text=[f"{v:.0f}" if isinstance(v, (int, float)) else v for v in ys],
+        ))
         fig.update_layout(title=title, **_chart_layout(x_title=y_label, y_title="Count"))
 
-    else:
-        # Fallback: horizontal bar
+    elif chart_type == "line":
         xs = df_chart["x"] if "x" in df_chart.columns else df_chart.iloc[:, 0]
         ys = df_chart["y"] if "y" in df_chart.columns else df_chart.iloc[:, 1]
-        fig.add_trace(go.Bar(x=ys, y=xs, orientation="h", marker_color="#5A287D"))
+        fig.add_trace(go.Scatter(
+            x=xs,
+            y=ys,
+            mode="lines+markers+text",
+            marker=dict(size=8, color="#5A287D"),
+            line=dict(color="#5A287D", width=2),
+            text=[f"{v:.1f}" if isinstance(v, (int, float)) else str(v) for v in ys],
+            textposition="top center",
+        ))
+        fig.update_layout(title=title, **_chart_layout(x_title=x_label, y_title=y_label))
+
+    else:
+        # Fallback: horizontal bar with all data
+        xs = df_chart["x"] if "x" in df_chart.columns else df_chart.iloc[:, 0]
+        ys = df_chart["y"] if "y" in df_chart.columns else df_chart.iloc[:, 1]
+        fig.add_trace(go.Bar(
+            x=ys, 
+            y=xs, 
+            orientation="h", 
+            marker_color="#5A287D",
+            text=[f"{v:.2f}" if isinstance(v, (int, float)) else v for v in ys],
+            textposition="auto",
+        ))
         fig.update_layout(title=title, **_chart_layout())
 
     st.plotly_chart(fig, use_container_width=True)
@@ -373,6 +453,18 @@ with st.sidebar:
     uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
 
     if uploaded_file is not None:
+        columns = _read_csv_columns(uploaded_file.getvalue())
+        if columns:
+            st.caption("Select X-axis, Y-axis, and chart type. Leave as Auto-detect if unsure.")
+            options = ["__auto__"] + columns
+            st.selectbox("Chart X-axis column", options, key="selected_x_col")
+            st.selectbox("Chart Y-axis column", options, key="selected_y_col")
+            st.selectbox(
+                "Chart type",
+                ["auto", "bar", "horizontal_bar", "scatter", "pie", "donut", "histogram"],
+                key="selected_chart_type",
+            )
+
         if st.button("Run Analysis"):
             load_data(uploaded_file.getvalue(), uploaded_file.name)
 
@@ -432,6 +524,7 @@ if st.session_state.data:
     is_cross_sectional = data.get("is_cross_sectional", False)
     chart_data         = data.get("chart_data", None)
     chart_config       = data.get("chart_config", None)
+    custom_plot_active = data.get("custom_plot_active", False)
     intelligence_card  = data.get("intelligence_card", {})
 
     # Info box
@@ -531,6 +624,11 @@ if st.session_state.data:
 
             st.subheader("Predictive Forecast Analysis")
 
+            if custom_plot_active and chart_data:
+                st.caption("Using selected X/Y/chart controls.")
+                _render_cross_sectional_chart(chart_data, chart_config or {})
+                st.markdown("---")
+
             plot_forecast  = forecast
             plot_lower     = lower
             plot_upper     = upper
@@ -589,7 +687,11 @@ if st.session_state.data:
                 x=historical_dates_dt if len(historical_dates_dt) else historical_dates,
                 y=historical,
                 line=dict(color="royalblue", width=2),
-                mode="lines", name="Historical",
+                mode="lines+markers", 
+                name="Historical",
+                text=[f"{v:.2f}" for v in historical],
+                textposition="top center",
+                hovertemplate="<b>Date:</b> %{x}<br><b>Value:</b> %{y:.2f}<extra></extra>",
             ))
 
             if plot_lower and plot_upper and plot_dates:
@@ -611,15 +713,24 @@ if st.session_state.data:
                     x=future_dates_dt if len(future_dates_dt) else plot_dates,
                     y=plot_forecast,
                     line=dict(color="orange", width=2, dash="dash"),
-                    mode="lines", name="Forecast",
+                    mode="lines+markers", 
+                    name="Forecast",
+                    text=[f"{v:.2f}" for v in plot_forecast],
+                    textposition="top center",
+                    hovertemplate="<b>Date:</b> %{x}<br><b>Forecast:</b> %{y:.2f}<extra></extra>",
                 ))
 
             if anomalies:
                 anom_dates_dt = pd.to_datetime([a.get("date") for a in anomalies], errors="coerce")
+                anom_values = [a.get("actual") for a in anomalies]
                 fig.add_trace(go.Scatter(
-                    x=anom_dates_dt, y=[a.get("actual") for a in anomalies],
-                    mode="markers", marker=dict(color="red", size=10, symbol="x"),
+                    x=anom_dates_dt, 
+                    y=anom_values,
+                    mode="markers", 
+                    marker=dict(color="red", size=10, symbol="x"),
                     name="Anomalies",
+                    text=[f"Anomaly: {v:.2f}" for v in anom_values],
+                    hovertemplate="<b>Anomaly Date:</b> %{x}<br><b>Value:</b> %{y:.2f}<extra></extra>",
                 ))
 
             if len(historical_dates_dt) > 0 and pd.notna(historical_dates_dt[-1]):
@@ -908,7 +1019,7 @@ if st.session_state.data:
                     cols = st.columns(len(suggested))
                     for i, q in enumerate(suggested):
                         with cols[i]:
-                            if st.button(q, key=f"sq_{i}_{q[:15]}", use_container_width=True):
+                            if st.button(q, key=f"sq_{i}_{q[:15]}", width="stretch"):
                                 st.session_state.pending_question = q
                                 st.rerun()
 

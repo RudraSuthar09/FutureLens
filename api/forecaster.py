@@ -82,13 +82,13 @@ def detect_date_column(df: pd.DataFrame) -> str:
 
 def calculate_forecast_horizon(n_rows: int) -> int:
     if n_rows < 20:
-        return 2
-    elif n_rows < 50:
-        return 3
-    elif n_rows < 104:
         return 4
-    else:
+    elif n_rows < 50:
+        return 6
+    elif n_rows < 104:
         return 8
+    else:
+        return 10  # Increased to provide ~10 days/periods
 
 
 def _detect_freq(dates: pd.Series) -> str:
@@ -124,17 +124,17 @@ def _auto_resample(df: pd.DataFrame, detected_freq: str) -> tuple:
 
     Returns (resampled_df, new_freq_string).
     """
-    cv = df['sales'].std() / (abs(df['sales'].mean()) + 1e-8)
+    cv = df['_target_'].std() / (abs(df['_target_'].mean()) + 1e-8)
 
     if detected_freq.upper().startswith(('D', 'B')) and cv > 1.2 and len(df) >= 28:
         df_w = (
-            df.set_index('date')['sales']
+            df.set_index('date')['_target_']
             .resample('W')
             .sum()
             .reset_index()
         )
-        df_w.columns = ['date', 'sales']
-        df_w = df_w[df_w['sales'].notna() & (df_w['sales'] != 0)]
+        df_w.columns = ['date', '_target_']
+        df_w = df_w[df_w['_target_'].notna() & (df_w['_target_'] != 0)]
         if len(df_w) >= 10:
             return df_w.reset_index(drop=True), 'W'
 
@@ -206,7 +206,7 @@ def run_forecast(df: pd.DataFrame) -> Dict[str, Any]:
     Step 8  SMAPE validation on hold-out
 
     Args:
-        df: DataFrame with 'date' (datetime) and 'sales' (numeric) columns,
+        df: DataFrame with 'date' (datetime) and '_target_' (numeric) columns,
             already cleaned by main.py upload pipeline.
 
     Returns:
@@ -220,7 +220,7 @@ def run_forecast(df: pd.DataFrame) -> Dict[str, Any]:
     # ── Step 1: prepare base frame and detect frequency ──────────────────────
     df_base = pd.DataFrame({
         'date':  pd.to_datetime(df['date'], utc=False),
-        'sales': df['sales'].values,
+        '_target_': df['_target_'].values,
     }).sort_values('date').reset_index(drop=True)
 
     detected_freq = _detect_freq(df_base['date'])
@@ -235,14 +235,14 @@ def run_forecast(df: pd.DataFrame) -> Dict[str, Any]:
     confidence_level = 90
 
     # ── Step 2: CV-based tuning + log transform ───────────────────────────────
-    cv  = float(df_base['sales'].std() / (abs(df_base['sales'].mean()) + 1e-8))
+    cv  = float(df_base['_target_'].std() / (abs(df_base['_target_'].mean()) + 1e-8))
     cps = _tune_changepoint(n_rows, cv)
 
     # Log-transform only when all values are positive (common for Sales/Revenue)
-    use_log = bool((df_base['sales'] > 0).all() and cv > 0.3)
+    use_log = bool((df_base['_target_'] > 0).all() and cv > 0.3)
 
     # ── Step 3: Prophet ───────────────────────────────────────────────────────
-    df_prophet = df_base.rename(columns={'date': 'ds', 'sales': 'y'}).copy()
+    df_prophet = df_base.rename(columns={'date': 'ds', '_target_': 'y'}).copy()
     if use_log:
         df_prophet['y'] = np.log1p(df_prophet['y'])
 
@@ -255,7 +255,8 @@ def run_forecast(df: pd.DataFrame) -> Dict[str, Any]:
         daily_seasonality   = False,
         changepoint_prior_scale = cps,
         seasonality_mode    = 'multiplicative' if cv > 0.5 else 'additive',
-        interval_width      = 0.80,
+        seasonality_prior_scale = 10.0,  # Improved: reduced to adapt better to data
+        interval_width      = 0.90,  # Improved: 90% confidence interval
     )
     prophet_model.fit(df_prophet)
 
@@ -288,10 +289,10 @@ def run_forecast(df: pd.DataFrame) -> Dict[str, Any]:
     y_train_q   = y_res.iloc[:-cal_size]
 
     base_params = dict(
-        n_estimators     = 100,
-        learning_rate    = 0.05,
-        num_leaves       = 15,
-        min_child_samples = max(3, n_rows // 20),
+        n_estimators     = 150,  # Increased for better accuracy
+        learning_rate    = 0.03,  # Decreased for better convergence
+        num_leaves       = 20,    # Increased slightly
+        min_child_samples = max(2, n_rows // 30),  # Improved
         random_state     = 42,
         verbose          = -1,
         objective        = 'quantile',
@@ -354,9 +355,9 @@ def run_forecast(df: pd.DataFrame) -> Dict[str, Any]:
         residual_history.append(r_mid)
 
     # ── Step 7: historical output (original scale) ───────────────────────────
-    historical_y     = df_base['sales'].tolist()
+    historical_y     = df_base['_target_'].tolist()
     historical_dates = df_base['date'].dt.strftime('%Y-%m-%d').tolist()
-    last_value       = float(df_base['sales'].iloc[-1])
+    last_value       = float(df_base['_target_'].iloc[-1])
     baseline_forecast = [last_value] * periods
 
     # ── Step 8: SMAPE validation ──────────────────────────────────────────────
@@ -376,7 +377,7 @@ def run_forecast(df: pd.DataFrame) -> Dict[str, Any]:
             )
             val_model_orig  = np.expm1(val_model_log)
         else:
-            val_actual_orig = df_base['sales'].values[-val_size:]
+            val_actual_orig = df_base['_target_'].values[-val_size:]
             val_model_orig  = val_model_log
 
         val_baseline = np.array([last_value] * val_size)

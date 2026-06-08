@@ -32,7 +32,7 @@ def detect_anomalies(df: pd.DataFrame, forecast_dict: Dict[str, Any]) -> List[Di
     - Direction labelled as spike/drop
 
     Args:
-        df:            DataFrame with 'date' and 'sales' columns.
+        df:            DataFrame with 'date' and '_target_' columns.
         forecast_dict: Output from run_forecast(); provides lower/upper bands.
 
     Returns:
@@ -40,7 +40,7 @@ def detect_anomalies(df: pd.DataFrame, forecast_dict: Dict[str, Any]) -> List[Di
         deviation_percent, is_outside_band, direction.
     """
     try:
-        series = df["sales"]
+        series = df["_target_"]
         dates  = df["date"].tolist()
         sales  = series.values.reshape(-1, 1)
 
