@@ -373,7 +373,6 @@ FutureLens/
 ├── assets/
 │   ├── superstore.csv       # Kaggle Superstore Sales — primary test dataset
 │   ├── avocado.csv          # Kaggle Avocado Prices — primary test dataset
-│   ├── natwest_logo.jpg     # Sidebar branding
 │   └── screenshots/         # UI screenshots (add before submission)
 │
 └── docs/
@@ -441,7 +440,6 @@ All endpoints at `http://localhost:8000`. Interactive docs at `/docs`.
 
 <div align="center">
 
-Built for the **NatWest Code for Purpose — India Hackathon**
-AI Predictive Forecasting track — *Look ahead, not backwards.*
+AI Predictive Forecasting — *Look ahead, not backwards.*
 
 </div>

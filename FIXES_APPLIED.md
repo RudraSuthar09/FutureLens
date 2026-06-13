@@ -51,7 +51,7 @@
     - Uses `gemini-1.5-flash` model
 - **Result**: Superior chat experience with optimal token usage
 
-## 📊 New Architecture
+##  New Architecture
 
 ```
 User Question
@@ -220,7 +220,7 @@ User: "What will sales look like next month?"
 2. Check `app.py` _render_cross_sectional_chart() function
 3. Ensure chart_type is correctly specified
 
-## 📊 Metrics
+##  Metrics
 
 | Metric | Before | After | Improvement |
 |--------|--------|-------|-------------|

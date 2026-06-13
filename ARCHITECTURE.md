@@ -158,7 +158,7 @@ Week 3 should see a seasonal spike, and ad spend increases continue driving grow
 Consider monitoring ad spend trends closely. What specific regions should we focus on?
 ```
 
-## 📊 Data Flow in Chat Endpoint
+##  Data Flow in Chat Endpoint
 
 **Location:** `main.py`, lines 1138-1220
 

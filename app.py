@@ -8,7 +8,7 @@ import os
 from dotenv import load_dotenv
 
 # --- Configuration ---
-st.set_page_config(page_title="FutureLens AI - Powered by NatWest", layout="wide", page_icon="🟣")
+st.set_page_config(page_title="FutureLens AI", layout="wide", page_icon="🟣")
 
 
 
@@ -17,49 +17,137 @@ load_dotenv()  # Load from .env file
 API_URL = os.getenv("API_URL", "http://localhost:8000")
 print(f"Using API_URL: {API_URL}")  # Debug line
 
+# --- Color Palette Constants ---
+THEME_COLORS = {
+    "bg_main": "#F7F8FA",
+    "bg_card": "#FFFFFF",
+    "border_card": "1px solid #EBEBEB",
+    "shadow_card": "0px 4px 10px rgba(0, 0, 0, 0.05)",
+    "bg_navy_dark": "#1A1F2B",
+    "bg_navy_light": "#232A38",
+    "accent_primary": "#E8923C",
+    "accent_hover": "#F2A65A",
+    "text_primary": "#1A1F2B",
+    "text_on_dark": "#E8E8E8",
+    "text_secondary": "#9CA3AF"
+}
+
 
 st.markdown("""
 <style>
+    :root {
+        --bg-main: #F7F8FA;
+        --bg-card: #FFFFFF;
+        --border-card: 1px solid #EBEBEB;
+        --shadow-card: 0px 4px 10px rgba(0, 0, 0, 0.05);
+        --bg-navy-dark: #1A1F2B;
+        --bg-navy-light: #232A38;
+        --accent-primary: #E8923C;
+        --accent-hover: #F2A65A;
+        --text-primary: #1A1F2B;
+        --text-on-dark: #E8E8E8;
+        --text-secondary: #9CA3AF;
+    }
+
     /* SIDEBAR */
     [data-testid="stSidebar"] {
-        background-color: #5A287D !important;
+        background-color: var(--bg-navy-dark) !important;
         border-right: none;
+    }
+    /* Pull sidebar content up */
+    [data-testid="stSidebar"] div[class*="stVerticalBlock"] {
+        padding-top: 15px !important;
+    }
+    .sidebar-logo-container {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-top: -30px !important;
+        margin-bottom: 25px !important;
+        padding: 5px 0px;
+    }
+    .sidebar-logo-icon {
+        background-color: #8C5300; /* Rich golden-bronze background to match mockup */
+        width: 42px;
+        height: 42px;
+        border-radius: 10px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.15);
+    }
+    .sidebar-logo-text-block {
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+    }
+    .sidebar-logo-title {
+        color: #FFFFFF !important;
+        font-family: 'Inter', sans-serif;
+        font-size: 1.45rem !important;
+        font-weight: 700 !important;
+        line-height: 1.1 !important;
+        letter-spacing: -0.3px !important;
+    }
+    .sidebar-logo-subtitle {
+        color: #E8923C !important; /* Golden Accent */
+        font-family: 'Inter', sans-serif;
+        font-size: 0.65rem !important;
+        font-weight: 600 !important;
+        letter-spacing: 1.2px !important;
+        margin-top: 2px !important;
+        text-transform: uppercase;
+        opacity: 0.95;
     }
     [data-testid="stSidebar"] p:not(.stButton p),
     [data-testid="stSidebar"] span:not(.stButton span),
     [data-testid="stSidebar"] label,
     [data-testid="stSidebar"] h1,
     [data-testid="stSidebar"] h2 {
+        color: var(--text-on-dark) !important;
+    }
+    [data-testid="stSidebarNav"] ul li a {
+        color: var(--text-on-dark) !important;
+        background-color: transparent !important;
+        transition: all 0.3s ease;
+    }
+    [data-testid="stSidebarNav"] ul li a:hover {
+        background-color: rgba(255, 255, 255, 0.05) !important;
+        color: var(--accent-primary) !important;
+    }
+    [data-testid="stSidebarNav"] ul li a[aria-current="page"] {
+        background-color: var(--accent-primary) !important;
         color: #FFFFFF !important;
+        font-weight: bold !important;
     }
     [data-testid="stSidebar"] .stButton>button {
-        background-color: #FFFFFF !important;
-        border: 2px solid #FFFFFF !important;
+        background-color: var(--bg-navy-light) !important;
+        border: 2px solid var(--bg-navy-light) !important;
         border-radius: 10px;
         transition: all 0.3s ease;
         padding: 5px 15px;
     }
     [data-testid="stSidebar"] .stButton>button p,
     [data-testid="stSidebar"] .stButton>button div {
-        color: #5A287D !important;
+        color: var(--text-on-dark) !important;
         font-weight: bold !important;
     }
     [data-testid="stSidebar"] .stButton>button:hover {
-        background-color: #F8F4FA !important;
-        border: 2px solid #00A859 !important;
+        background-color: var(--accent-primary) !important;
+        border: 2px solid var(--accent-primary) !important;
     }
     [data-testid="stSidebar"] .stButton>button:hover p,
     [data-testid="stSidebar"] .stButton>button:hover div {
-        color: #00A859 !important;
+        color: var(--bg-navy-dark) !important;
     }
     [data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] {
-        background-color: rgba(255, 255, 255, 0.1) !important;
-        border: 1px dashed rgba(255, 255, 255, 0.5) !important;
+        background-color: rgba(255, 255, 255, 0.05) !important;
+        border: 1px dashed rgba(255, 255, 255, 0.3) !important;
         border-radius: 10px;
     }
     [data-testid="stSidebar"] [data-testid="stFileUploader"] button {
-        background-color: #FFFFFF !important;
-        border: 2px solid #FFFFFF !important;
+        background-color: var(--bg-navy-light) !important;
+        border: 2px solid var(--bg-navy-light) !important;
         border-radius: 8px;
         font-weight: 600;
         padding: 4px 15px !important;
@@ -68,101 +156,159 @@ st.markdown("""
     [data-testid="stSidebar"] [data-testid="stFileUploader"] button p,
     [data-testid="stSidebar"] [data-testid="stFileUploader"] button span,
     [data-testid="stSidebar"] [data-testid="stFileUploader"] button div {
-        color: #5A287D !important;
+        color: var(--text-on-dark) !important;
         transition: all 0.3s ease !important;
     }
     [data-testid="stSidebar"] [data-testid="stFileUploader"] button:hover {
-        background-color: #5A287D !important;
-        border: 2px solid #FFFFFF !important;
+        background-color: var(--accent-primary) !important;
+        border: 2px solid var(--accent-primary) !important;
         transform: scale(1.06) !important;
         box-shadow: 0px 4px 10px rgba(0,0,0,0.2) !important;
     }
     [data-testid="stSidebar"] [data-testid="stFileUploader"] button:hover p,
     [data-testid="stSidebar"] [data-testid="stFileUploader"] button:hover span,
     [data-testid="stSidebar"] [data-testid="stFileUploader"] button:hover div {
-        color: #FFFFFF !important;
+        color: var(--bg-navy-dark) !important;
     }
     .stMain .stButton>button {
         color: #FFFFFF !important;
-        background-color: #5A287D !important;
+        background-color: var(--accent-primary) !important;
         border: none !important;
         font-weight: 600;
         border-radius: 8px;
         transition: all 0.3s ease;
-        box-shadow: 0 4px 6px rgba(90, 40, 125, 0.2);
+        box-shadow: 0 4px 6px rgba(232, 146, 60, 0.2);
     }
     .stMain .stButton>button:hover {
-        background-color: #A20067 !important;
-        box-shadow: 0 6px 12px rgba(162, 0, 103, 0.3);
+        background-color: var(--accent-hover) !important;
+        box-shadow: 0 6px 12px rgba(242, 166, 90, 0.3);
     }
     .stMain h1, .stMain h2, .stMain h3 {
-        color: #5A287D !important;
+        color: var(--text-primary) !important;
     }
-    .header-title {
-        color: #5A287D !important;
-        font-size: 4.2rem !important;
-        font-weight: 900 !important;
-        letter-spacing: -2px !important;
-        margin-left: 15px !important;
+    .hero-banner {
+        background-color: var(--bg-navy-dark);
+        padding: 40px;
+        border-radius: 16px;
+        margin-bottom: 30px;
+        color: var(--text-on-dark);
+        box-shadow: var(--shadow-card);
+    }
+    .hero-badge {
+        background-color: rgba(232, 146, 60, 0.15);
+        color: var(--accent-primary);
+        font-size: 0.8rem;
+        font-weight: 700;
+        padding: 4px 12px;
+        border-radius: 20px;
+        display: inline-block;
+        margin-bottom: 15px;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+    }
+    .hero-title {
+        color: #FFFFFF !important;
+        font-size: 2.5rem !important;
+        font-weight: 800 !important;
+        line-height: 1.2 !important;
+        margin-bottom: 15px !important;
+    }
+    .hero-subtitle {
+        color: var(--text-secondary) !important;
+        font-size: 1.1rem !important;
+        line-height: 1.6 !important;
+        max-width: 800px;
         margin-bottom: 0px !important;
-        padding-bottom: 0px !important;
-        line-height: 1.1 !important;
     }
-    .sub-header {
-        color: #555 !important;
-        font-size: 1.3rem !important;
-        margin-bottom: 35px !important;
-        font-weight: 500 !important;
+    .hero-btn-primary {
+        background-color: var(--accent-primary) !important;
+        color: #FFFFFF !important;
+        padding: 10px 20px;
+        border-radius: 8px;
+        font-weight: 600;
+        text-decoration: none;
+        transition: all 0.3s ease;
+        display: inline-block;
+        border: 1px solid var(--accent-primary);
+    }
+    .hero-btn-primary:hover {
+        background-color: var(--accent-hover) !important;
+        border-color: var(--accent-hover);
+        transform: translateY(-2px);
+        color: #FFFFFF !important;
+    }
+    .hero-btn-secondary {
+        background-color: transparent !important;
+        color: #FFFFFF !important;
+        padding: 10px 20px;
+        border-radius: 8px;
+        font-weight: 600;
+        text-decoration: none;
+        transition: all 0.3s ease;
+        display: inline-block;
+        border: 1px solid #FFFFFF;
+    }
+    .hero-btn-secondary:hover {
+        background-color: rgba(255, 255, 255, 0.1) !important;
+        transform: translateY(-2px);
+        color: #FFFFFF !important;
     }
     .stSpinner > div > div {
-        border-top-color: #39FF14 !important;
-        border-right-color: #00A859 !important;
-        border-bottom-color: #39FF14 !important;
+        border-top-color: var(--accent-primary) !important;
+        border-right-color: var(--accent-hover) !important;
+        border-bottom-color: var(--accent-primary) !important;
         border-left-color: transparent !important;
     }
     .stSpinner p {
-        color: #00A859 !important;
+        color: var(--accent-primary) !important;
         font-weight: 500 !important;
         font-size: 1.1rem !important;
     }
     .stTabs [data-baseweb="tab-list"] { gap: 15px; padding: 10px 0; }
     .stTabs [data-baseweb="tab"] {
-        background-color: #F8F4FA;
+        background-color: var(--bg-main);
         border-radius: 30px;
         padding: 5px 25px;
         border: 1px solid #EBE2F0;
         box-shadow: 0 2px 4px rgba(0,0,0,0.05);
         transition: all 0.3s ease;
     }
-    .stTabs [data-baseweb="tab"] p { color: #5A287D !important; font-weight: 600; }
+    .stTabs [data-baseweb="tab"] p { color: var(--text-primary) !important; font-weight: 600; }
     .stTabs [data-baseweb="tab"]:hover {
-        border: 1px solid #00A859;
-        background-color: #FFFFFF;
-        box-shadow: 0 4px 6px rgba(0, 168, 89, 0.2);
+        border: 1px solid var(--accent-primary);
+        background-color: var(--bg-card);
+        box-shadow: 0 4px 6px rgba(232, 146, 60, 0.15);
         transform: translateY(-2px);
     }
     .stTabs [aria-selected="true"] {
-        background-color: #5A287D !important;
+        background-color: var(--accent-primary) !important;
         border: none !important;
-        box-shadow: 0 4px 8px rgba(90, 40, 125, 0.3) !important;
+        box-shadow: 0 4px 8px rgba(232, 146, 60, 0.3) !important;
     }
     .stTabs [aria-selected="true"] p { color: #FFFFFF !important; font-weight: bold !important; }
+    [data-testid="stAppViewContainer"] {
+        background-color: var(--bg-main) !important;
+    }
+    [data-testid="stHeader"] {
+        background-color: transparent !important;
+    }
     [data-testid="stChatMessage"] {
-        background-color: #F8F4FA;
+        background-color: var(--bg-card) !important;
+        border: var(--border-card) !important;
         border-radius: 15px;
         padding: 15px 20px;
-        border-left: 6px solid #5A287D;
-        box-shadow: 0px 4px 10px rgba(0, 0, 0, 0.05);
+        border-left: 6px solid var(--accent-primary) !important;
+        box-shadow: var(--shadow-card);
         margin-bottom: 15px;
     }
-    [data-testid="stChatMessageAvatarUser"]      { background-color: #00A859 !important; color: white !important; }
-    [data-testid="stChatMessageAvatarAssistant"] { background-color: #5A287D !important; color: white !important; }
+    [data-testid="stChatMessageAvatarUser"]      { background-color: var(--accent-primary) !important; color: white !important; }
+    [data-testid="stChatMessageAvatarAssistant"] { background-color: var(--bg-navy-dark) !important; color: white !important; }
     [data-testid="stChatInput"] {
-        border: 2px solid #5A287D !important;
+        border: 2px solid var(--accent-primary) !important;
         border-radius: 15px !important;
     }
     .sidebar-success {
-        background-color: #00A859 !important;
+        background-color: var(--accent-primary) !important;
         color: #FFFFFF !important;
         padding: 10px;
         border-radius: 8px;
@@ -172,41 +318,136 @@ st.markdown("""
         border: 1px solid #FFFFFF;
     }
     .custom-info-box {
-        background-color: #E6F4EA !important;
-        border-left: 5px solid #00A859 !important;
+        background-color: var(--bg-navy-dark) !important;
+        border-left: 5px solid var(--accent-primary) !important;
         padding: 15px !important;
         border-radius: 8px !important;
-        color: #004D27 !important;
+        color: var(--text-on-dark) !important;
         margin-bottom: 20px !important;
-        font-weight: bold !important;
+        font-weight: 500 !important;
         font-size: 1.05rem !important;
+        box-shadow: var(--shadow-card);
     }
-    [data-testid="stProgressBar"] > div > div { background-color: #39FF14 !important; }
-    [data-testid="stTable"] { border-radius: 8px; overflow: hidden; }
-    [data-testid="stTable"] table { border: 2px solid #00A859 !important; }
+    .custom-info-box strong {
+        color: var(--accent-primary) !important;
+    }
+    [data-testid="stProgressBar"] > div > div { background-color: var(--accent-primary) !important; }
+    [data-testid="stTable"] {
+        background-color: var(--bg-card) !important;
+        border-radius: 12px !important;
+        overflow: hidden !important;
+        box-shadow: var(--shadow-card) !important;
+        border: var(--border-card) !important;
+        margin-bottom: 25px !important;
+    }
+    [data-testid="stTable"] table {
+        background-color: var(--bg-card) !important;
+        border-collapse: collapse !important;
+        width: 100% !important;
+        border: none !important;
+    }
     [data-testid="stTable"] th {
-        background-color: #00A859 !important;
+        background-color: var(--bg-navy-dark) !important;
         color: #FFFFFF !important;
-        font-weight: 900 !important;
-        font-size: 1.1rem !important;
+        font-weight: 700 !important;
+        font-size: 1.05rem !important;
+        padding: 12px 16px !important;
+        border: none !important;
+        text-align: left !important;
+    }
+    [data-testid="stTable"] td {
+        color: var(--text-primary) !important;
+        padding: 12px 16px !important;
+        border-bottom: 1px solid #EBEBEB !important;
+        border-top: none !important;
+        border-left: none !important;
+        border-right: none !important;
+        font-size: 0.95rem !important;
+    }
+    [data-testid="stTable"] tr:last-child td {
+        border-bottom: none !important;
+    }
+    [data-testid="stTable"] td:last-child {
+        color: var(--accent-primary) !important;
+        font-weight: 700 !important;
+    }
+
+    /* Status Badges Styling */
+    .status-badge, .badge, .status {
+        display: inline-block !important;
+        padding: 4px 12px !important;
+        border-radius: 20px !important;
+        font-weight: 600 !important;
+        font-size: 0.85rem !important;
+        text-transform: uppercase !important;
+        letter-spacing: 0.5px !important;
+        text-align: center !important;
+    }
+    .status-badge.validated, .badge-validated, .status-validated, [class*="validated"], :has(> [class*="validated"]) {
+        background-color: rgba(0, 168, 89, 0.12) !important;
+        color: #00A859 !important;
+        border: 1px solid rgba(0, 168, 89, 0.25) !important;
+    }
+    .status-badge.processing, .badge-processing, .status-processing, [class*="processing"], :has(> [class*="processing"]) {
+        background-color: rgba(232, 146, 60, 0.12) !important;
+        color: var(--accent-primary) !important;
+        border: 1px solid rgba(232, 146, 60, 0.25) !important;
+    }
+    .status-badge.error, .badge-error, .status-error, [class*="error"], :has(> [class*="error"]) {
+        background-color: rgba(229, 62, 62, 0.12) !important;
+        color: #E53E3E !important;
+        border: 1px solid rgba(229, 62, 62, 0.25) !important;
     }
     [data-testid="stPlotlyChart"], .stPlotlyChart {
-        border: 2px solid #EBE2F0 !important;
+        border: var(--border-card) !important;
         border-radius: 10px !important;
         padding: 5px !important;
-        background-color: #FFFFFF !important;
-        box-shadow: 0px 4px 10px rgba(0, 0, 0, 0.05) !important;
+        background-color: var(--bg-card) !important;
+        box-shadow: var(--shadow-card) !important;
+    }
+    [data-testid="stExpander"] {
+        background-color: var(--bg-card) !important;
+        border: var(--border-card) !important;
+        border-radius: 10px !important;
+        box-shadow: var(--shadow-card) !important;
+        margin-bottom: 20px !important;
+    }
+    [data-testid="stVerticalBlockBorderWrapper"] {
+        background-color: var(--bg-card) !important;
+        border: var(--border-card) !important;
+        border-radius: 12px !important;
+        box-shadow: var(--shadow-card) !important;
+        padding: 20px !important;
+    }
+    [data-testid="stMetric"] {
+        background-color: var(--bg-card) !important;
+        border: var(--border-card) !important;
+        border-radius: 12px !important;
+        padding: 15px !important;
+        box-shadow: var(--shadow-card) !important;
+    }
+    [data-testid="stMetricLabel"] {
+        color: var(--text-primary) !important;
+        font-weight: 600 !important;
+    }
+    [data-testid="stMetricValue"] {
+        color: var(--accent-primary) !important;
+        font-weight: 800 !important;
     }
 </style>
 """, unsafe_allow_html=True)
 
-col1, col2 = st.columns([2, 12], vertical_alignment="center")
-with col1:
-    st.image("assets/natwest_logo.jpg", width=160)
-with col2:
-    st.markdown('<div class="header-title">FutureLens AI</div>', unsafe_allow_html=True)
-
-st.markdown('<div class="sub-header">Powered by NatWest — FutureLens doesn\'t just predict the future, it tells you how to change it.</div>', unsafe_allow_html=True)
+st.markdown("""
+<div class="hero-banner">
+    <div class="hero-badge">⚡ NEXT-GENERATION PREDICTIVE ENGINE</div>
+    <div class="hero-title">Illuminate Your Future with FutureLens AI.</div>
+    <div class="hero-subtitle">FutureLens transforms complex data into high-fidelity forecasting models. Identify emerging market shifts, mitigate risks, and seize opportunities with executive-grade precision.</div>
+    <div style="margin-top: 25px; display: flex; gap: 15px;">
+        <a href="#predictive-forecast-analysis" class="hero-btn-primary">Explore Active Models</a>
+        <a href="#dataset-overview" class="hero-btn-secondary">View Methodology</a>
+    </div>
+</div>
+""", unsafe_allow_html=True)
 
 # --- Session State ---
 if "data"                  not in st.session_state: st.session_state.data = None
@@ -224,19 +465,19 @@ if "forecast_notification" not in st.session_state: st.session_state.forecast_no
 # Base chart layout — does NOT include xaxis_title / yaxis_title so callers
 # can safely pass those separately without hitting "multiple values" errors.
 CHART_LAYOUT = dict(
-    plot_bgcolor="rgba(0,0,0,0)",
+    plot_bgcolor="#FFFFFF",
     paper_bgcolor="rgba(0,0,0,0)",
     xaxis=dict(
-        showline=True, linewidth=1, linecolor="black",
-        showgrid=True, gridwidth=1, gridcolor="rgba(0,0,0,0.1)",
-        title_font=dict(size=16, color="black", family="Arial, sans-serif"),
-        tickfont=dict(size=14, color="black", family="Arial, sans-serif"),
+        showline=True, linewidth=1, linecolor="#EBEBEB",
+        showgrid=True, gridwidth=1, gridcolor="#F3F4F6",
+        title_font=dict(size=14, color="#1A1F2B", family="Arial, sans-serif"),
+        tickfont=dict(size=12, color="#9CA3AF", family="Arial, sans-serif"),
     ),
     yaxis=dict(
-        showline=True, linewidth=1, linecolor="black",
-        showgrid=True, gridwidth=1, gridcolor="rgba(0,0,0,0.1)",
-        title_font=dict(size=16, color="black", family="Arial, sans-serif"),
-        tickfont=dict(size=14, color="black", family="Arial, sans-serif"),
+        showline=True, linewidth=1, linecolor="#EBEBEB",
+        showgrid=True, gridwidth=1, gridcolor="#F3F4F6",
+        title_font=dict(size=14, color="#1A1F2B", family="Arial, sans-serif"),
+        tickfont=dict(size=12, color="#9CA3AF", family="Arial, sans-serif"),
     ),
 )
 
@@ -299,6 +540,7 @@ def _render_cross_sectional_chart(chart_data: dict, chart_config: dict):
         st.info("No chart data available for this dataset.")
         return
 
+    navy_dark = THEME_COLORS["bg_navy_dark"]
     chart_type = chart_data.get("chart_type", "horizontal_bar")
     rows       = chart_data.get("rows", [])
     x_col      = chart_data.get("x_col")
@@ -340,7 +582,7 @@ def _render_cross_sectional_chart(chart_data: dict, chart_config: dict):
                 x=ys, 
                 y=xs, 
                 orientation="h", 
-                marker_color="#5A287D",
+                marker_color=navy_dark,
                 text=[f"{v:.2f}" if isinstance(v, (int, float)) else v for v in ys],
                 textposition="auto",
             ))
@@ -357,7 +599,7 @@ def _render_cross_sectional_chart(chart_data: dict, chart_config: dict):
         fig.add_trace(go.Bar(
             x=xs, 
             y=ys, 
-            marker_color="#5A287D",
+            marker_color=navy_dark,
             text=[f"{v:.2f}" if isinstance(v, (int, float)) else v for v in ys],
             textposition="auto",
         ))
@@ -383,7 +625,7 @@ def _render_cross_sectional_chart(chart_data: dict, chart_config: dict):
             mode="markers+text",
             marker=dict(
                 size=10,
-                color=colors_col if colors_col is not None else "#5A287D",
+                color=colors_col if colors_col is not None else navy_dark,
                 colorscale="Viridis" if colors_col is not None else None,
                 showscale=True if colors_col is not None else False,
             ),
@@ -411,7 +653,7 @@ def _render_cross_sectional_chart(chart_data: dict, chart_config: dict):
         ys = df_chart["y"] if "y" in df_chart.columns else df_chart.iloc[:, 0]
         fig.add_trace(go.Histogram(
             x=ys, 
-            marker_color="#5A287D",
+            marker_color=navy_dark,
             text=[f"{v:.0f}" if isinstance(v, (int, float)) else v for v in ys],
         ))
         fig.update_layout(title=title, **_chart_layout(x_title=y_label, y_title="Count"))
@@ -423,8 +665,8 @@ def _render_cross_sectional_chart(chart_data: dict, chart_config: dict):
             x=xs,
             y=ys,
             mode="lines+markers+text",
-            marker=dict(size=8, color="#5A287D"),
-            line=dict(color="#5A287D", width=2),
+            marker=dict(size=8, color=navy_dark),
+            line=dict(color=navy_dark, width=2),
             text=[f"{v:.1f}" if isinstance(v, (int, float)) else str(v) for v in ys],
             textposition="top center",
         ))
@@ -438,7 +680,7 @@ def _render_cross_sectional_chart(chart_data: dict, chart_config: dict):
             x=ys, 
             y=xs, 
             orientation="h", 
-            marker_color="#5A287D",
+            marker_color=navy_dark,
             text=[f"{v:.2f}" if isinstance(v, (int, float)) else v for v in ys],
             textposition="auto",
         ))
@@ -449,6 +691,21 @@ def _render_cross_sectional_chart(chart_data: dict, chart_config: dict):
 
 # --- Sidebar ---
 with st.sidebar:
+    st.markdown("""
+    <div class="sidebar-logo-container">
+        <div class="sidebar-logo-icon">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="9" stroke-dasharray="1 3"/>
+                <circle cx="12" cy="12" r="6" stroke-dasharray="1 2"/>
+                <circle cx="12" cy="12" r="2" fill="#FFFFFF"/>
+            </svg>
+        </div>
+        <div class="sidebar-logo-text-block">
+            <div class="sidebar-logo-title">FutureLens AI</div>
+            <div class="sidebar-logo-subtitle">STRATEGIC INSIGHTS</div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
     st.header("Controls")
     uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
 
@@ -531,7 +788,7 @@ if st.session_state.data:
     if is_cross_sectional:
         st.markdown(
             f"""<div class="custom-info-box">
-                📊 Cross-sectional dataset detected.<br/>
+                 Cross-sectional dataset detected.<br/>
                 Analysing <strong>'{target_col_name}'</strong> across {len(historical)} entities.<br/>
                 {intelligence_card.get('groq_reason', '')}
             </div>""",
@@ -540,7 +797,7 @@ if st.session_state.data:
     else:
         st.markdown(
             f"""<div class="custom-info-box">
-                📊 Forecasting <strong>'{target_col_name}'</strong> using <strong>'{date_col_name}'</strong> as the date.<br/>
+                 Forecasting <strong>'{target_col_name}'</strong> using <strong>'{date_col_name}'</strong> as the date.<br/>
                 Detected frequency: <strong>{detected_freq}</strong>.<br/>
                 {len(feature_cols)} additional numeric feature column(s) found.
             </div>""",
@@ -550,7 +807,7 @@ if st.session_state.data:
     # Forecast query bar (time-series only)
     if not is_cross_sectional:
         forecast_query = st.text_input(
-            label            = "🔍 Forecast query",
+            label            = " Forecast query",
             placeholder      = "e.g. 'next 3 weeks', 'West region forecast', 'show me next month'",
             key              = "forecast_query_input",
             label_visibility = "collapsed",
@@ -584,7 +841,7 @@ if st.session_state.data:
 
     st.markdown("---")
 
-    tab1, tab2, tab3, tab4 = st.tabs(["📈 Forecast / Chart", "🔍 Root Cause", "🔀 Scenario", "💬 Chat"])
+    tab1, tab2, tab3, tab4 = st.tabs([" Forecast / Chart", " Root Cause", " Scenario", " Chat"])
 
     # =========================================================================
     # TAB 1 — Forecast / Chart
@@ -619,7 +876,7 @@ if st.session_state.data:
             fu    = st.session_state.get("forecast_update")
             notif = st.session_state.get("forecast_notification")
             if notif:
-                st.success(f"📊 Forecast chart updated — {notif}")
+                st.success(f" Forecast chart updated — {notif}")
                 st.session_state.forecast_notification = None
 
             st.subheader("Predictive Forecast Analysis")
@@ -650,7 +907,7 @@ if st.session_state.data:
                     chart_subtitle = fu.get("label", "")
 
             if chart_subtitle:
-                st.caption(f"🔎 {chart_subtitle}")
+                st.caption(f" {chart_subtitle}")
 
             # Group highlight callout
             if fu and fu.get("type") == "group" and group_forecasts:
@@ -662,7 +919,7 @@ if st.session_state.data:
                     st.markdown(
                         f"""<div style="background-color:#E6F4EA;border-left:5px solid #00A859;
                             padding:12px 16px;border-radius:8px;margin-top:12px;">
-                            <strong>📍 {g.get('group_col','Group')}: {g.get('group')}</strong><br/>
+                            <strong> {g.get('group_col','Group')}: {g.get('group')}</strong><br/>
                             Current: <strong>{g.get('last_hist', 0):,.0f}</strong> →
                             Forecast: <strong>{g.get('last_forecast', 0):,.0f}</strong>
                             (<span style="color:{'green' if change>=0 else 'red'}">{change:+.1f}%</span> expected change)
@@ -686,7 +943,7 @@ if st.session_state.data:
             fig.add_trace(go.Scatter(
                 x=historical_dates_dt if len(historical_dates_dt) else historical_dates,
                 y=historical,
-                line=dict(color="royalblue", width=2),
+                line=dict(color=THEME_COLORS["bg_navy_dark"], width=2),
                 mode="lines+markers", 
                 name="Historical",
                 text=[f"{v:.2f}" for v in historical],
@@ -704,15 +961,15 @@ if st.session_state.data:
                     name=f"{confidence_level}% Confidence Band",
                     x=future_dates_dt if len(future_dates_dt) else plot_dates,
                     y=plot_upper, mode="lines",
-                    marker=dict(color="#A20067"), line=dict(width=0),
-                    fillcolor="rgba(162,0,103,0.15)", fill="tonexty", showlegend=True,
+                    marker=dict(color=THEME_COLORS["accent_primary"]), line=dict(width=0),
+                    fillcolor="rgba(232,146,60,0.15)", fill="tonexty", showlegend=True,
                 ))
 
             if plot_forecast and plot_dates:
                 fig.add_trace(go.Scatter(
                     x=future_dates_dt if len(future_dates_dt) else plot_dates,
                     y=plot_forecast,
-                    line=dict(color="orange", width=2, dash="dash"),
+                    line=dict(color=THEME_COLORS["accent_primary"], width=2, dash="dash"),
                     mode="lines+markers", 
                     name="Forecast",
                     text=[f"{v:.2f}" for v in plot_forecast],
@@ -759,7 +1016,7 @@ if st.session_state.data:
                 upper_pct  = ((float(upper[-1]) - last_hist) / abs(last_hist) * 100) if upper and last_hist != 0 else 0.0
                 direction_word = "up" if change_pct >= 0 else "down"
                 summary_lines = [
-                    f"📈 Next <strong>{forecast_horizon}</strong> {detected_freq} period(s): "
+                    f" Next <strong>{forecast_horizon}</strong> {detected_freq} period(s): "
                     f"central estimate <strong>{direction_word} {abs(change_pct):.1f}%</strong> from current level.",
                     f"Lower bound: <strong>{lower_pct:+.1f}%</strong> · Upper bound: <strong>{upper_pct:+.1f}%</strong>.",
                 ]
@@ -800,7 +1057,7 @@ if st.session_state.data:
             features    = [s["feature"]    for s in shap_res]
             importances = [s["importance"] for s in shap_res]
             fig_shap    = go.Figure(go.Bar(
-                x=importances, y=features, orientation="h", marker_color="#5A287D"
+                x=importances, y=features, orientation="h", marker_color=THEME_COLORS["bg_navy_dark"]
             ))
             fig_shap.update_layout(**_chart_layout(x_title="Importance", y_title="Feature"))
             fig_shap.update_yaxes(categoryorder="total ascending")
@@ -829,12 +1086,12 @@ if st.session_state.data:
             col_s1, col_s2 = st.columns(2)
 
             with col_s1:
-                st.markdown("#### 📈 Growth Scenario")
+                st.markdown("####  Growth Scenario")
                 growth_pct = st.slider("Adjust growth rate", min_value=-50, max_value=50, value=10, key="growth_slider")
                 run_growth = st.button("Run Growth Scenario", key="btn_growth")
 
             with col_s2:
-                st.markdown("#### 🔄 Trend Scenario")
+                st.markdown("####  Trend Scenario")
                 trend_type = st.radio(
                     "Apply trend",
                     options=["flat", "recent_trend", "remove_outliers"],
@@ -877,11 +1134,11 @@ if st.session_state.data:
                 fig_sc = go.Figure()
                 fig_sc.add_trace(go.Scatter(
                     x=pd.to_datetime(sc_dates, errors="coerce"),
-                    y=baseline_vals, line=dict(color="#5A287D", dash="dash"), name="Baseline",
+                    y=baseline_vals, line=dict(color=THEME_COLORS["bg_navy_dark"], dash="dash"), name="Baseline",
                 ))
                 fig_sc.add_trace(go.Scatter(
                     x=pd.to_datetime(sc_dates, errors="coerce"),
-                    y=scenario_vals, line=dict(color="#A20067", width=3), name=label,
+                    y=scenario_vals, line=dict(color=THEME_COLORS["accent_primary"], width=3), name=label,
                 ))
                 # ✅ Fixed: axis titles via _chart_layout
                 fig_sc.update_layout(
@@ -890,7 +1147,7 @@ if st.session_state.data:
                 )
                 st.plotly_chart(fig_sc, use_container_width=True)
                 if summary_text:
-                    st.markdown(f'<div class="custom-info-box">📊 {summary_text}</div>', unsafe_allow_html=True)
+                    st.markdown(f'<div class="custom-info-box"> {summary_text}</div>', unsafe_allow_html=True)
 
             if run_growth:
                 with st.spinner("Running growth scenario..."):
@@ -974,7 +1231,7 @@ if st.session_state.data:
                             fig_mini.add_trace(go.Scatter(
                                 x=pd.to_datetime(dt_slice, errors="coerce"),
                                 y=fc_slice, name=label,
-                                line=dict(color="#5A287D", width=2), mode="lines+markers",
+                                line=dict(color=THEME_COLORS["accent_primary"], width=2), mode="lines+markers",
                             ))
                             fig_mini.add_trace(go.Scatter(
                                 x=pd.to_datetime(dt_slice, errors="coerce"),
@@ -983,7 +1240,7 @@ if st.session_state.data:
                             fig_mini.add_trace(go.Scatter(
                                 x=pd.to_datetime(dt_slice, errors="coerce"),
                                 y=lo_slice, name="Lower",
-                                fill="tonexty", fillcolor="rgba(90,40,125,0.15)",
+                                fill="tonexty", fillcolor="rgba(232,146,60,0.15)",
                                 line=dict(width=0), showlegend=False,
                             ))
                             fig_mini.update_layout(
@@ -1001,7 +1258,7 @@ if st.session_state.data:
                         matched = [g for g in group_forecasts
                                    if keyword.lower() in str(g.get("group", "")).lower()]
                         if matched:
-                            st.markdown(f"**📊 Group breakdown — '{keyword}':**")
+                            st.markdown(f"** Group breakdown — '{keyword}':**")
                             st.table(matched)
 
                 if rate_limited:

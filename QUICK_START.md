@@ -36,7 +36,7 @@ streamlit run app.py
 **Goal:** Verify charts show all data with values
 
 ```
-1. In Streamlit app, click "📊 Single/Cross-Sectional Analysis" (Tab 1)
+1. In Streamlit app, click " Single/Cross-Sectional Analysis" (Tab 1)
 2. Click "Demo Mode" or upload sample_data.csv
 3. Select different chart types:
    - Bar Chart
@@ -61,7 +61,7 @@ streamlit run app.py
 **Goal:** Verify forecast chart displays all data values
 
 ```
-1. In "📊 Single/Cross-Sectional Analysis" tab
+1. In " Single/Cross-Sectional Analysis" tab
 2. Upload sample_data.csv or use Demo Mode
 3. Scroll down to "Forecast Chart"
 4. Verify:
@@ -130,7 +130,7 @@ Groq result: groq_agent - answer: Next 4 weeks...
 - Next step (e.g., "monitor ad spend")
 - Follow-up question (e.g., "Would you like...")
 
-## 📊 Testing with Sample Data
+##  Testing with Sample Data
 
 ### Demo Mode (Easiest)
 ```
