@@ -140,13 +140,14 @@ def _groq_parse(message: str, card: dict) -> dict | None:
     for attempt in range(2):
         try:
             resp = _groq_client.chat.completions.create(
-                model    = "llama-3.3-70b-versatile",
+                model    = "openai/gpt-oss-120b",
                 messages = [
                     {"role": "system",  "content": system},
                     {"role": "user",    "content": message},
                 ],
-                max_tokens  = 80,
+                max_tokens  = 200,
                 temperature = 0.0,
+                reasoning_effort = "low",
             )
             raw = resp.choices[0].message.content.strip()
             # Strip markdown fences if present

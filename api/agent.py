@@ -39,9 +39,12 @@ if GEMINI_API_KEY and GEMINI_API_KEY != "your_gemini_api_key_here":
 # GROQ AGENT — Main Orchestrator
 # ─────────────────────────────────────────────────────────────────────────────
 
-GROQ_AGENT_SYSTEM = """You are FutureLens Agent, an expert data analyst.
+GROQ_AGENT_SYSTEM = """You are FutureLens Agent, an expert data analyst and reasoning orchestrator.
 
-Your job: Analyze user questions against available forecast and anomaly data.
+You are given the result of an existing analytical capability (forecast, anomaly
+detection, group/segment analysis, or scenario simulation) that has already been
+computed by the app's forecasting/ML pipeline. You do not recompute or re-derive
+these numbers — you reason over the result you are given to answer the question.
 
 Return ONLY valid JSON with this structure:
 {
@@ -59,6 +62,8 @@ Guidelines:
 - Only mention data you were provided
 - Format numbers with 2 decimal places
 - Never fabricate or guess values
+- If the provided data indicates information is unavailable or an error occurred,
+  say so explicitly in "answer" instead of guessing
 """
 
 
@@ -67,6 +72,57 @@ def _get_groq_client() -> Groq:
     if not GROQ_API_KEY:
         raise EnvironmentError("GROQ_API_KEY not set")
     return Groq(api_key=GROQ_API_KEY)
+
+
+def _build_legacy_summary(
+    forecast_data: Dict[str, Any],
+    anomalies_data: List[Dict],
+    group_forecasts: List[Dict],
+) -> str:
+    """
+    Raw data summary (forecast/anomalies/top groups), used only as a fallback
+    when the planner/tools retrieval step above is unavailable or fails.
+    """
+    forecast_summary = ""
+    if forecast_data:
+        hist = forecast_data.get("historical", [])
+        fc = forecast_data.get("forecast", [])
+        lo = forecast_data.get("lower", [])
+        hi = forecast_data.get("upper", [])
+
+        if hist and fc:
+            last_val = float(hist[-1])
+            first_fc = float(fc[0])
+            last_fc = float(fc[-1])
+            change = ((last_fc - last_val) / abs(last_val) * 100) if last_val else 0
+            forecast_summary = f"""
+FORECAST DATA:
+- Historical: {len(hist)} data points, latest value = {last_val:.2f}
+- Forecast: {len(fc)} periods ahead
+- Next period forecast: {first_fc:.2f} [range: {lo[0]:.2f} to {hi[0]:.2f}]
+- Final period forecast: {last_fc:.2f} [range: {lo[-1]:.2f} to {hi[-1]:.2f}]
+- Overall change: {change:+.1f}% over forecast period
+"""
+
+    anomalies_summary = ""
+    if anomalies_data:
+        high_sev = len([a for a in anomalies_data if a.get("severity") == "high"])
+        recent = anomalies_data[-1]
+        anomalies_summary = f"""
+ANOMALIES:
+- Total detected: {len(anomalies_data)}
+- High severity: {high_sev}
+- Recent: {recent.get('date', 'unknown')} with {recent.get('deviation_percent', 0):.0f}% deviation
+"""
+
+    groups_summary = ""
+    if group_forecasts and len(group_forecasts) > 0:
+        sorted_groups = sorted(group_forecasts, key=lambda x: x.get("last_forecast", 0), reverse=True)[:3]
+        groups_summary = "TOP GROUPS:\n"
+        for g in sorted_groups:
+            groups_summary += f"  - {g.get('group', 'N/A')}: forecast {g.get('last_forecast', 0):.2f}, change {g.get('expected_change_percent', 0):+.1f}%\n"
+
+    return f"\n{forecast_summary}\n{anomalies_summary}\n{groups_summary}"
 
 
 def groq_agent(
@@ -92,61 +148,51 @@ def groq_agent(
     try:
         client = _get_groq_client()
         card = card or {}
+        forecast_data = forecast_data or {}
+        anomalies_data = anomalies_data or []
+        group_forecasts = group_forecasts or []
         target_col = card.get("target_col", "target")
         freq_label = card.get("freq_label", "period")
-        
-        # Build data summary for Groq
-        forecast_summary = ""
-        if forecast_data:
-            hist = forecast_data.get("historical", [])
-            fc = forecast_data.get("forecast", [])
-            lo = forecast_data.get("lower", [])
-            hi = forecast_data.get("upper", [])
-            
-            if hist and fc:
-                last_val = float(hist[-1])
-                first_fc = float(fc[0])
-                last_fc = float(fc[-1])
-                change = ((last_fc - last_val) / abs(last_val) * 100) if last_val else 0
-                forecast_summary = f"""
-FORECAST DATA:
-- Historical: {len(hist)} data points, latest value = {last_val:.2f}
-- Forecast: {len(fc)} periods ahead
-- Next period forecast: {first_fc:.2f} [range: {lo[0]:.2f} to {hi[0]:.2f}]
-- Final period forecast: {last_fc:.2f} [range: {lo[-1]:.2f} to {hi[-1]:.2f}]
-- Overall change: {change:+.1f}% over forecast period
-"""
-        
-        anomalies_summary = ""
-        if anomalies_data:
-            high_sev = len([a for a in anomalies_data if a.get("severity") == "high"])
-            if anomalies_data:
-                recent = anomalies_data[-1]
-                anomalies_summary = f"""
-ANOMALIES:
-- Total detected: {len(anomalies_data)}
-- High severity: {high_sev}
-- Recent: {recent.get('date', 'unknown')} with {recent.get('deviation_percent', 0):.0f}% deviation
-"""
-        
-        groups_summary = ""
-        if group_forecasts and len(group_forecasts) > 0:
-            sorted_groups = sorted(group_forecasts, key=lambda x: x.get("last_forecast", 0), reverse=True)[:3]
-            groups_summary = "TOP GROUPS:\n"
-            for g in sorted_groups:
-                groups_summary += f"  - {g.get('group', 'N/A')}: forecast {g.get('last_forecast', 0):.2f}, change {g.get('expected_change_percent', 0):+.1f}%\n"
-        
+
+        # Step 1 — figure out which existing analytical capability answers this
+        # question (forecast / anomaly / group analysis / scenario / etc.) and
+        # retrieve its *already-computed* result via the existing planner/tools
+        # layer, instead of Groq reasoning over a fixed dump of everything.
+        tool_name = "none"
+        tool_result = None
+        try:
+            from api.planner import plan
+            from api.tools import execute_tool
+
+            tool_call = plan(user_message, card)
+            tool_name = tool_call.get("tool", "none") if isinstance(tool_call, dict) else "none"
+            candidate = execute_tool(tool_call, card, forecast_data, anomalies_data, group_forecasts)
+            if isinstance(candidate, dict):
+                tool_result = candidate
+        except Exception as tool_err:
+            logger.warning(f"Tool retrieval failed, falling back to raw summaries: {tool_err}")
+            tool_result = None
+
+        if tool_result is not None:
+            data_section = (
+                f"\nANALYTICAL RESULT (from the '{tool_name}' capability — this is the "
+                f"source of truth, do not compute your own numbers):\n"
+                f"{json.dumps(tool_result, default=str)[:4000]}\n"
+            )
+        else:
+            # Fallback: same raw summaries used before this feature existed, so
+            # the agent keeps working even if planner/tools can't be imported
+            # or fail for this request.
+            data_section = _build_legacy_summary(forecast_data, anomalies_data, group_forecasts)
+
         # Build agent message
         agent_prompt = f"""User question: {user_message}
 
 Target metric: {target_col}
 Time frequency: {freq_label}
+{data_section}
 
-{forecast_summary}
-{anomalies_summary}
-{groups_summary}
-
-Analyze this question against the data. Return structured JSON response."""
+Analyze this question using ONLY the data above. Return structured JSON response."""
         
         # Build messages list
         messages = [
@@ -168,10 +214,11 @@ Analyze this question against the data. Return structured JSON response."""
         
         # Call Groq
         message = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model="openai/gpt-oss-120b",
             messages=messages,
             temperature=0.2,
             max_tokens=2000,
+            reasoning_effort="low",
         )
         
         response_text = message.choices[0].message.content.strip()
@@ -260,14 +307,14 @@ Output: 2-4 sentences that start with the key finding, include important numbers
 suggest a next step, and end with ONE follow-up question."""
         
         model = genai.GenerativeModel(
-            model_name="models/gemini-1.5-flash",
+            model_name="models/gemini-3.1-flash-lite",
             system_instruction=GEMINI_FORMATTER_SYSTEM,
         )
-        
+
         response = model.generate_content(
             format_prompt,
             generation_config=genai.types.GenerationConfig(
-                max_output_tokens=300,
+                max_output_tokens=400,
                 temperature=0.2,
             )
         )

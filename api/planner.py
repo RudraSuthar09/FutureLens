@@ -8,7 +8,7 @@ from groq import Groq
 logger = logging.getLogger(__name__)
 
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
-GROQ_MODEL = "llama-3.1-8b-instant"
+GROQ_MODEL = "openai/gpt-oss-20b"
 
 PLANNER_SYSTEM = """You are a routing agent for a time-series forecasting app.
 Given a user question, return ONLY a JSON object selecting the correct tool.
@@ -74,8 +74,9 @@ def plan(message: str, card: dict) -> dict:
                 {"role": "system", "content": PLANNER_SYSTEM},
                 {"role": "user", "content": user_content},
             ],
-            max_tokens=80,
+            max_tokens=200,
             temperature=0.0,
+            reasoning_effort="low",
         )
         raw = response.choices[0].message.content.strip()
 

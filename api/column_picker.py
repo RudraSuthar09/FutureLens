@@ -176,10 +176,11 @@ def pick_columns_with_groq(dataset_profile: dict) -> dict:
         prompt = _build_prompt(dataset_profile)
 
         response = client.chat.completions.create(
-            model       = "llama-3.3-70b-versatile",
+            model       = "openai/gpt-oss-120b",
             messages    = [{"role": "user", "content": prompt}],
             temperature = 0.0,
             max_tokens  = 512,
+            reasoning_effort = "low",
         )
 
         raw_text = response.choices[0].message.content or ""
